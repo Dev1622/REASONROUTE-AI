@@ -1,13 +1,8 @@
 // geminiService.ts
 // ReasonRoute AI — Gemini Integration Layer v4.0
-//
-// ARCHITECTURE:
-//   Gemini does TWO things only:
-//     1. Interpret visual context (traffic/heatmap images) → disruption zones
-//     2. Explain the engine's real math decisions in human language → reasoning log
-//
-//   Gemini does NOT compute routes, coordinates, or metrics.
-//   All math is done by reasonRouteEngine.ts (deterministic, auditable).
+// FIX: heatmap grid built as grid[row=y][col=x] to match getEdgeCost lookup.
+//      Previously it was grid[x][y] (transposed), so disruption zones from
+//      images were written to wrong cells — engine saw traffic in wrong locations.
 
 import { GoogleGenAI } from "@google/genai";
 import { Node } from "./baslineSolver";
@@ -21,7 +16,7 @@ import {
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 // ─────────────────────────────────────────────────────────
-// Public result type
+// Public result type (unchanged)
 // ─────────────────────────────────────────────────────────
 
 export type OptimizationResult = {
@@ -34,13 +29,13 @@ export type OptimizationResult = {
     radius: number;
     description: string;
   }[];
-  logs: string[];         // Gemini-generated human-readable reasoning
-  engineLogs: string[];   // Raw engine audit trail
+  logs: string[];
+  engineLogs: string[];
   metrics: {
     baseline: {
-      distance: number;   // km
-      time: number;       // minutes
-      emissions: number;  // kg CO₂
+      distance: number;
+      time: number;
+      emissions: number;
     };
     optimized: {
       distance: number;
@@ -64,7 +59,7 @@ type DisruptionZone = {
 };
 
 // ─────────────────────────────────────────────────────────
-// Step 1: Parse stops text → deterministic Node[]
+// Step 1: Parse stops text → deterministic Node[] (unchanged)
 // ─────────────────────────────────────────────────────────
 
 function parseStopsToNodes(stopsInput: string): { nodes: Node[]; depotId: string } {
@@ -78,7 +73,7 @@ function parseStopsToNodes(stopsInput: string): { nodes: Node[]; depotId: string
   const nodes: Node[] = lines.map((line, i) => {
     const parts = line.split(",").map(p => p.trim());
     const label = parts[0];
-    const id = `node_${i}`;
+    const id    = `node_${i}`;
 
     let x: number, y: number;
 
@@ -86,27 +81,20 @@ function parseStopsToNodes(stopsInput: string): { nodes: Node[]; depotId: string
       x = Math.min(95, Math.max(5, Number(parts[1])));
       y = Math.min(95, Math.max(5, Number(parts[2])));
     } else {
-      // Spiral layout — deterministic spread on 100×100 grid
-      const angle = (i / Math.max(lines.length, 1)) * 2 * Math.PI;
+      const angle  = (i / Math.max(lines.length, 1)) * 2 * Math.PI;
       const radius = i === 0 ? 0 : 20 + (i % 4) * 12;
       x = +(50 + radius * Math.cos(angle)).toFixed(1);
       y = +(50 + radius * Math.sin(angle)).toFixed(1);
     }
 
-    return {
-      id,
-      x,
-      y,
-      type: i === 0 ? "depot" : "stop",
-      label,
-    } as Node & { label: string };
+    return { id, x, y, type: i === 0 ? "depot" : "stop", label } as Node & { label: string };
   });
 
   return { nodes, depotId: nodes[0].id };
 }
 
 // ─────────────────────────────────────────────────────────
-// Step 2: Visual context extraction (Gemini visual task)
+// Step 2: Visual context extraction (unchanged)
 // ─────────────────────────────────────────────────────────
 
 async function extractDisruptionsFromImage(
@@ -138,7 +126,7 @@ Return ONLY a valid JSON array. If nothing found, return [].
       config: { responseMimeType: "application/json", temperature: 0 },
     });
 
-    const text = response.text ?? "[]";
+    const text    = response.text ?? "[]";
     const cleaned = text.replace(/```json|```/g, "").trim();
     return JSON.parse(cleaned) as DisruptionZone[];
   } catch {
@@ -147,8 +135,7 @@ Return ONLY a valid JSON array. If nothing found, return [].
 }
 
 // ─────────────────────────────────────────────────────────
-// Step 3: Reasoning generation (Gemini explanation task)
-// Receives real engine numbers, outputs human narrative only
+// Step 3: Reasoning generation (unchanged)
 // ─────────────────────────────────────────────────────────
 
 async function generateReasoningLog(
@@ -156,11 +143,9 @@ async function generateReasoningLog(
   engineResult: EngineResult,
   disruptions: DisruptionZone[]
 ): Promise<string[]> {
-  // Build label lookup
-  const labelOf = (id: string) =>
-    (nodes.find(n => n.id === id) as any)?.label ?? id;
+  const labelOf = (id: string) => (nodes.find(n => n.id === id) as any)?.label ?? id;
 
-  const baselinePath = engineResult.baselinePath.map(labelOf).join(" → ");
+  const baselinePath  = engineResult.baselinePath.map(labelOf).join(" → ");
   const optimizedPath = engineResult.optimizedPath.map(labelOf).join(" → ");
   const { baseline, optimized, improvement } = engineResult.metrics;
   const patterns = engineResult.detectedPatterns;
@@ -199,12 +184,11 @@ Output ONLY the JSON array.
       config: { responseMimeType: "application/json", temperature: 0.2 },
     });
 
-    const text = response.text ?? "[]";
+    const text    = response.text ?? "[]";
     const cleaned = text.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(cleaned);
+    const parsed  = JSON.parse(cleaned);
     return Array.isArray(parsed) ? parsed : [];
   } catch {
-    // Safe fallback: format engine logs as reasoning entries
     return engineResult.engineLogs.slice(1, 7).map((log, i) => {
       const n = String(i).padStart(2, "0");
       return `[${n}] ${log.replace(/^\[[^\]]+\]\s*/, "")}`;
@@ -213,7 +197,7 @@ Output ONLY the JSON array.
 }
 
 // ─────────────────────────────────────────────────────────
-// Main export
+// Main export (unchanged interface)
 // ─────────────────────────────────────────────────────────
 
 export const optimizeRoute = async (
@@ -227,31 +211,37 @@ export const optimizeRoute = async (
   }
 ): Promise<OptimizationResult> => {
 
-  // 1. Parse stops deterministically
   const { nodes, depotId } = parseStopsToNodes(stopsInput);
 
-  // 2. Extract disruptions from image (Gemini visual role)
   let disruptions: DisruptionZone[] = [];
   let heatmapForEngine: number[][] | undefined;
 
   if (contextImageBase64 && contextImageMimeType) {
     disruptions = await extractDisruptionsFromImage(contextImageBase64, contextImageMimeType);
 
-    // Convert disruptions → heatmap grid for the engine
     if (disruptions.length > 0) {
-      const grid: number[][] = Array.from({ length: 100 }, () =>
-        new Array(100).fill(0)
-      );
+      // Build a 100×100 grid.
+      // FIX: grid is indexed as grid[row][col] where row=y, col=x
+      // to match getEdgeCost lookup: r=floor((y/100)*rows), c=floor((x/100)*cols)
+      // Previously the loop used grid[nx][ny] = grid[x][y] which is transposed —
+      // disruptions at (x,y) were written to row=x instead of row=y.
+      const GRID = 100;
+      const grid: number[][] = Array.from({ length: GRID }, () => new Array(GRID).fill(0));
+
       for (const zone of disruptions) {
-        const cx = Math.round(Math.min(99, Math.max(0, zone.x)));
-        const cy = Math.round(Math.min(99, Math.max(0, zone.y)));
-        const r = Math.max(1, Math.min(30, zone.radius));
+        const cx = Math.round(Math.min(GRID - 1, Math.max(0, zone.x)));
+        const cy = Math.round(Math.min(GRID - 1, Math.max(0, zone.y)));
+        const r  = Math.max(1, Math.min(30, zone.radius));
+
         for (let dx = -r; dx <= r; dx++) {
           for (let dy = -r; dy <= r; dy++) {
-            const nx = cx + dx, ny = cy + dy;
-            if (nx >= 0 && nx < 100 && ny >= 0 && ny < 100) {
-              const severity = Math.max(0, 1 - Math.sqrt(dx * dx + dy * dy) / r) * 0.9;
-              grid[nx][ny] = Math.max(grid[nx][ny], severity);
+            const col = cx + dx;   // x → column
+            const row = cy + dy;   // y → row
+            if (row >= 0 && row < GRID && col >= 0 && col < GRID) {
+              const dist     = Math.sqrt(dx * dx + dy * dy);
+              const severity = Math.max(0, 1 - dist / r) * 0.9;
+              // grid[row][col] — consistent with getEdgeCost lookup
+              grid[row][col] = Math.max(grid[row][col], severity);
             }
           }
         }
@@ -260,43 +250,39 @@ export const optimizeRoute = async (
     }
   }
 
-  // 3. Run deterministic GNOPT math engine
   const engineInput: EngineInput = {
     nodes,
     depotId,
-    trafficHeatmap: heatmapForEngine,
+    trafficHeatmap:  heatmapForEngine,
     disruptionZones: disruptions,
     preferences: {
-      weightTime: preferences?.weightTime ?? 0.5,
+      weightTime:      preferences?.weightTime      ?? 0.5,
       weightEmissions: preferences?.weightEmissions ?? 0.3,
-      weightDistance: preferences?.weightDistance ?? 0.2,
+      weightDistance:  preferences?.weightDistance  ?? 0.2,
     },
   };
 
   const engineResult = runReasonRouteEngine(engineInput);
-
-  // 4. Gemini explains the engine's decisions (no math, only narrative)
   const reasoningLog = await generateReasoningLog(nodes, engineResult, disruptions);
 
-  // 5. Return — emissions converted grams → kg for UI
   const toKg = (g: number) => +(g / 1000).toFixed(3);
 
   return {
     nodes,
-    baselinePath: engineResult.baselinePath,
-    optimizedPath: engineResult.optimizedPath,
+    baselinePath:    engineResult.baselinePath,
+    optimizedPath:   engineResult.optimizedPath,
     disruptions,
-    logs: reasoningLog,
-    engineLogs: engineResult.engineLogs,
+    logs:            reasoningLog,
+    engineLogs:      engineResult.engineLogs,
     metrics: {
       baseline: {
-        distance: +engineResult.metrics.baseline.distance.toFixed(2),
-        time: +engineResult.metrics.baseline.time.toFixed(1),
+        distance:  +engineResult.metrics.baseline.distance.toFixed(2),
+        time:      +engineResult.metrics.baseline.time.toFixed(1),
         emissions: toKg(engineResult.metrics.baseline.emissions),
       },
       optimized: {
-        distance: +engineResult.metrics.optimized.distance.toFixed(2),
-        time: +engineResult.metrics.optimized.time.toFixed(1),
+        distance:  +engineResult.metrics.optimized.distance.toFixed(2),
+        time:      +engineResult.metrics.optimized.time.toFixed(1),
         emissions: toKg(engineResult.metrics.optimized.emissions),
       },
       improvement: engineResult.metrics.improvement,
