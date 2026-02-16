@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="700" viewBox="0 0 1000 700">
+  <rect width="1000" height="700" fill="#0b1020"/>
+  <rect x="0" y="0" width="1000" height="700" fill="#12213f" opacity="0.4"/>
+  <circle cx="380" cy="350" r="210" fill="#ff3322" opacity="0.55"/>
+  <circle cx="620" cy="350" r="210" fill="#ff3322" opacity="0.55"/>
+  <rect x="450" y="295" width="100" height="110" fill="#22cc88" opacity="0.9"/>
+  <text x="500" y="285" fill="#ffffff" font-size="22" text-anchor="middle" font-family="monospace">SAFE BRIDGE</text>
+</svg>

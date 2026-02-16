@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="700" viewBox="0 0 1000 700">
+  <defs>
+    <radialGradient id="z1" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ff2222" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#ff8822" stop-opacity="0.25"/>
+    </radialGradient>
+    <radialGradient id="z2" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ff3333" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#ff9933" stop-opacity="0.2"/>
+    </radialGradient>
+    <radialGradient id="z3" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ff2222" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#ff9933" stop-opacity="0.2"/>
+    </radialGradient>
+  </defs>
+  <rect width="1000" height="700" fill="#0b1020"/>
+  <rect x="0" y="0" width="1000" height="700" fill="#13244a" opacity="0.35"/>
+  <circle cx="260" cy="190" r="120" fill="url(#z1)"/>
+  <circle cx="520" cy="420" r="145" fill="url(#z2)"/>
+  <circle cx="780" cy="250" r="120" fill="url(#z3)"/>
+  <text x="500" y="60" fill="#ffffff" font-size="24" text-anchor="middle" font-family="monospace">SCALE TEST: MULTI-ZONE DISRUPTION</text>
+</svg>

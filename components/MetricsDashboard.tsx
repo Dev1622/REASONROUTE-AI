@@ -1,6 +1,6 @@
 import React from 'react';
 import { Metrics } from '../types';
-import { ArrowDown, TrendingDown, Clock, Leaf } from 'lucide-react';
+import { ArrowDown, ArrowUp, Minus, TrendingDown, Clock, Leaf } from 'lucide-react';
 import clsx from 'clsx';
 
 interface MetricsDashboardProps {
@@ -8,21 +8,23 @@ interface MetricsDashboardProps {
   optimized: Metrics;
 }
 
-const MetricCard: React.FC<{ 
-  label: string; 
-  base: number; 
-  opt: number; 
-  unit: string; 
+const MetricCard: React.FC<{
+  label: string;
+  base: number;
+  opt: number;
+  unit: string;
   icon: React.ReactNode;
   colorClass: string;
 }> = ({ label, base, opt, unit, icon, colorClass }) => {
   const diff = base - opt;
-  const percent = ((diff / base) * 100).toFixed(1);
+  const pctNum = base > 0 ? (diff / base) * 100 : 0;
+  const improving = pctNum > 0.05;
+  const regressing = pctNum < -0.05;
 
   return (
     <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700 backdrop-blur-sm">
       <div className="flex items-center gap-2 mb-2">
-        <div className={clsx("p-1.5 rounded bg-slate-700/50", colorClass)}>
+        <div className={clsx('p-1.5 rounded bg-slate-700/50', colorClass)}>
           {icon}
         </div>
         <span className="text-slate-400 text-xs font-bold uppercase tracking-wider">{label}</span>
@@ -33,9 +35,20 @@ const MetricCard: React.FC<{
       </div>
       <div className="mt-2 flex justify-between items-center text-xs">
         <span className="text-slate-500 decoration-slate-600 line-through">Base: {base}</span>
-        <span className="flex items-center text-emerald-400 font-mono">
-          <ArrowDown className="w-3 h-3 mr-0.5" />
-          {percent}%
+        <span
+          className={clsx(
+            'flex items-center font-mono',
+            improving ? 'text-emerald-400' : regressing ? 'text-rose-400' : 'text-slate-400'
+          )}
+        >
+          {improving ? (
+            <ArrowDown className="w-3 h-3 mr-0.5" />
+          ) : regressing ? (
+            <ArrowUp className="w-3 h-3 mr-0.5" />
+          ) : (
+            <Minus className="w-3 h-3 mr-0.5" />
+          )}
+          {regressing ? `+${Math.abs(pctNum).toFixed(1)}%` : `${pctNum.toFixed(1)}%`}
         </span>
       </div>
     </div>
@@ -45,27 +58,27 @@ const MetricCard: React.FC<{
 const MetricsDashboard: React.FC<MetricsDashboardProps> = ({ baseline, optimized }) => {
   return (
     <div className="grid grid-cols-3 gap-4 w-full">
-      <MetricCard 
-        label="Total Distance" 
-        base={baseline.distance} 
-        opt={optimized.distance} 
-        unit="km" 
+      <MetricCard
+        label="Total Distance"
+        base={baseline.distance}
+        opt={optimized.distance}
+        unit="km"
         icon={<TrendingDown className="w-4 h-4 text-blue-400" />}
         colorClass="text-blue-400"
       />
-      <MetricCard 
-        label="Est. Time" 
-        base={baseline.time} 
-        opt={optimized.time} 
-        unit="min" 
+      <MetricCard
+        label="Est. Time"
+        base={baseline.time}
+        opt={optimized.time}
+        unit="min"
         icon={<Clock className="w-4 h-4 text-amber-400" />}
         colorClass="text-amber-400"
       />
-      <MetricCard 
-        label="Emissions" 
-        base={baseline.emissions} 
-        opt={optimized.emissions} 
-        unit="kg CO₂" 
+      <MetricCard
+        label="Emissions"
+        base={baseline.emissions}
+        opt={optimized.emissions}
+        unit="kg CO2"
         icon={<Leaf className="w-4 h-4 text-emerald-400" />}
         colorClass="text-emerald-400"
       />

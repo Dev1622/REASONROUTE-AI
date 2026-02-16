@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="700" viewBox="0 0 1000 700">
+  <defs>
+    <linearGradient id="band" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ff9933" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#ff9933" stop-opacity="0.2"/>
+    </linearGradient>
+  </defs>
+  <rect width="1000" height="700" fill="#0b1020"/>
+  <rect x="0" y="0" width="1000" height="700" fill="#12213f" opacity="0.35"/>
+  <rect x="40" y="60" width="920" height="160" fill="url(#band)"/>
+  <circle cx="260" cy="140" r="80" fill="#ff551a" opacity="0.35"/>
+  <circle cx="520" cy="140" r="95" fill="#ff551a" opacity="0.35"/>
+  <circle cx="780" cy="140" r="80" fill="#ff551a" opacity="0.35"/>
+  <text x="500" y="120" fill="#ffffff" font-size="24" text-anchor="middle" font-family="monospace">CONGESTED TOP CORRIDOR</text>
+</svg>

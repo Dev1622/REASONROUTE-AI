@@ -2,8 +2,12 @@ export interface Node {
   id: string;
   x: number; // Normalized 0-100
   y: number; // Normalized 0-100
-  type: 'hub' | 'stop' | 'warehouse';
-  label: string;
+  type?: 'depot' | 'hub' | 'stop' | 'warehouse' | 'virtual';
+  label?: string;
+  constraints?: any[];
+  demand?: number;
+  timeWindow?: [number, number];
+  serviceTime?: number;
 }
 
 export interface Disruption {

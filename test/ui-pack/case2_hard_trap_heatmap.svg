@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="700" viewBox="0 0 1000 700">
+  <defs>
+    <radialGradient id="hot" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ff1a1a" stop-opacity="1"/>
+      <stop offset="70%" stop-color="#ff5a1a" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#ffcc33" stop-opacity="0.2"/>
+    </radialGradient>
+  </defs>
+  <rect width="1000" height="700" fill="#0b1020"/>
+  <rect x="0" y="0" width="1000" height="700" fill="#12213f" opacity="0.4"/>
+  <circle cx="500" cy="360" r="210" fill="url(#hot)"/>
+  <text x="500" y="365" fill="#ffffff" font-size="26" text-anchor="middle" font-family="monospace">HARD TRAP ZONE</text>
+</svg>
