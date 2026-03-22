@@ -23,6 +23,11 @@ type Args = {
   mode?: "pure" | "product";
   strict?: boolean;
   budgetMin?: number;
+  alnsLanes?: number;
+  alnsIters?: number;
+  alnsTempEnd?: number;
+  alnsRemoveMin?: number;
+  alnsRemoveMax?: number;
 };
 
 type SplitResult = {
@@ -68,6 +73,16 @@ function parseArgs(argv: string[]): Args {
       args.strict = false;
     } else if (a === "--budget-min") {
       args.budgetMin = Number(argv[++i]);
+    } else if (a === "--alns-lanes") {
+      args.alnsLanes = Number(argv[++i]);
+    } else if (a === "--alns-iters") {
+      args.alnsIters = Number(argv[++i]);
+    } else if (a === "--alns-temp-end") {
+      args.alnsTempEnd = Number(argv[++i]);
+    } else if (a === "--alns-remove-min") {
+      args.alnsRemoveMin = Number(argv[++i]);
+    } else if (a === "--alns-remove-max") {
+      args.alnsRemoveMax = Number(argv[++i]);
     }
   }
   return args;
@@ -3322,11 +3337,11 @@ function separatorExactIntensify(
   let improved = 0;
   let tried = 0;
   let temp = 220;
-  const strongMode = rounds >= 8;
-  const boundaryBand = strongMode ? 14 : 12;
-  const maxTouched = strongMode ? 18 : 15;
-  const basePerSep = strongMode ? 11 : 9;
-  const branchCap = strongMode ? 14 : 10;
+  const strongMode = rounds >= 6;
+  const boundaryBand = strongMode ? 16 : 12;
+  const maxTouched = strongMode ? 20 : 15;
+  const basePerSep = strongMode ? 12 : 9;
+  const branchCap = strongMode ? 18 : 10;
   const relaxRatio = strongMode ? 0.006 : 0.004;
 
   for (let round = 0; round < rounds; round++) {
@@ -3379,7 +3394,7 @@ function separatorExactIntensify(
         ),
       }))
       .sort((u, v) => u.d - v.d)
-      .slice(0, Math.min(localCustomers.length, strongMode ? 14 : 10))
+      .slice(0, Math.min(localCustomers.length, strongMode ? 18 : 10))
       .map(x => x.id);
     const branchOrders = boundaryBranchOrders(inst, baseOrders, boundaryNodes, [angleA, angleB], branchCap);
     const orders = [...new Map([...baseOrders, ...branchOrders].map(o => [o.join(","), o])).values()];
@@ -3446,7 +3461,7 @@ function routeBundleExactIntensify(
   let tried = 0;
   let improved = 0;
   const touchedByBestRound = new Set<number>();
-  const strongMode = rounds >= 5;
+  const strongMode = rounds >= 6;
   const bundleK = strongMode ? 8 : 6;
   const minLoadTarget = Math.floor(inst.capacity * 0.90);
   const penaltyWeight = 22;
@@ -3490,7 +3505,7 @@ function routeBundleExactIntensify(
       orders,
       localCustomers.slice(0, Math.min(localCustomers.length, strongMode ? 10 : 8)),
       [angleA, angleB],
-      strongMode ? 12 : 8
+      strongMode ? 20 : 8
     );
     const allOrders = [...new Map([...orders, ...branchOrders].map(o => [o.join(","), o])).values()];
     let bestRoundObj = Number.POSITIVE_INFINITY;
@@ -5106,7 +5121,7 @@ function main(): void {
   const args = parseArgs(process.argv.slice(2));
   const vrpPath = must(
     args.vrpPath,
-    "Usage: npx tsx test/benchmark_cvrplib.ts --vrp <path> [--sol <path> | --bks <value>] [--vehicles <k>] [--profile default|strong] [--seed <n>] [--strict|--non-strict] [--budget-min <5..60>]"
+    "Usage: npx tsx test/benchmark_cvrplib.ts --vrp <path> [--sol <path> | --bks <value>] [--vehicles <k>] [--profile default|strong] [--seed <n>] [--strict|--non-strict] [--budget-min <5..60>] [--alns-lanes <1..4>] [--alns-iters <n>] [--alns-temp-end <n>] [--alns-remove-min <0.02..0.40>] [--alns-remove-max <0.03..0.60>]"
   );
 
   const vrpText = readFileSync(vrpPath, "utf8");
@@ -5147,6 +5162,26 @@ function main(): void {
     y: p.y,
     type: id === inst.depot ? "depot" : "stop",
   }));
+  const engineMode: "fast" | "quality" = (strongRun || strictBenchmark) ? "quality" : "fast";
+  const engineBudgetMs = strictBenchmark ? (strongRun ? 1200 : 900) : (strongRun ? 700 : 420);
+  const engineAlnsBudgetMs = strictBenchmark ? (strongRun ? 900 : 700) : (strongRun ? 480 : 320);
+  const engineAlnsIterationsDefault = strictBenchmark ? (strongRun ? 12000 : 10500) : (strongRun ? 8000 : 5600);
+  const engineAlnsLanesDefault = strictBenchmark ? (strongRun ? 4 : 3) : (strongRun ? 3 : 2);
+  const engineAlnsIterations = Number.isFinite(args.alnsIters ?? NaN)
+    ? Math.max(1000, Math.min(20000, Number(args.alnsIters)))
+    : engineAlnsIterationsDefault;
+  const engineAlnsLanes = Number.isFinite(args.alnsLanes ?? NaN)
+    ? Math.max(1, Math.min(4, Number(args.alnsLanes)))
+    : engineAlnsLanesDefault;
+  const engineAlnsTempEnd = Number.isFinite(args.alnsTempEnd ?? NaN)
+    ? Math.max(50, Number(args.alnsTempEnd))
+    : (strictBenchmark ? 850 : 520);
+  const engineAlnsRemoveMin = Number.isFinite(args.alnsRemoveMin ?? NaN)
+    ? Math.max(0.02, Math.min(0.40, Number(args.alnsRemoveMin)))
+    : 0.07;
+  const engineAlnsRemoveMax = Number.isFinite(args.alnsRemoveMax ?? NaN)
+    ? Math.max(engineAlnsRemoveMin + 0.01, Math.min(0.60, Number(args.alnsRemoveMax)))
+    : 0.35;
 
   const t0 = process.hrtime.bigint();
   const out = runReasonRouteEngine({
@@ -5154,9 +5189,20 @@ function main(): void {
     depotId: String(inst.depot),
     preferences: { weightTime: 0, weightEmissions: 0, weightDistance: 1 },
     optimization: {
-      mode: strongRun ? "quality" : "fast",
-      timeBudgetMs: strongRun ? 260 : 120,
+      mode: engineMode,
+      timeBudgetMs: engineBudgetMs,
       benchmarkPure: runMode === "pure",
+      alns: {
+        enabled: true,
+        maxIterations: engineAlnsIterations,
+        timeBudgetMs: engineAlnsBudgetMs,
+        lanes: engineAlnsLanes,
+        temperatureStart: strictBenchmark ? 4200 : 3000,
+        temperatureEnd: engineAlnsTempEnd,
+        reactionFactor: strictBenchmark ? 0.12 : 0.15,
+        removeMinFrac: engineAlnsRemoveMin,
+        removeMaxFrac: engineAlnsRemoveMax,
+      },
     },
     benchmark: {
       metric: "cvrplib_euc2d",
@@ -6384,15 +6430,27 @@ function main(): void {
 
   const intensifyAnchors = budgetExceeded()
     ? []
-    : chooseDiverseAnchorsForIntensify(inst, candidates, strictBenchmark ? 1 : (strongRun ? 3 : 2));
+    : chooseDiverseAnchorsForIntensify(inst, candidates, strictBenchmark ? 2 : (strongRun ? 3 : 2));
+  const separatorMaxTimeMs = strictBenchmark ? 180_000 : (strongRun ? 210_000 : 150_000);
+  const bundleReservedTimeMs = strictBenchmark ? 120_000 : (strongRun ? 120_000 : 90_000);
   const sepStart = Date.now();
+  const sepDeadlineByCap = sepStart + separatorMaxTimeMs;
+  const sepDeadlineByReserve = budgetDeadline - bundleReservedTimeMs;
+  const sepDeadline = Math.max(sepStart, Math.min(sepDeadlineByCap, sepDeadlineByReserve));
   let sepTried = 0;
   let sepImproved = 0;
   let sepBonusRounds = 0;
+  let sepTimeCapped = 0;
+  let sepReservedStop = 0;
   const sepRoundBoost = weakPathSkipped ? (strongRun ? 3 : 2) : 0;
   for (let ai = 0; ai < intensifyAnchors.length && !budgetExceeded(); ai++) {
+    if (Date.now() >= sepDeadline) {
+      sepTimeCapped = Date.now() >= sepDeadlineByCap ? 1 : 0;
+      sepReservedStop = Date.now() >= sepDeadlineByReserve ? 1 : 0;
+      break;
+    }
     const anchor = intensifyAnchors[ai];
-    const sepBaseRounds = (strictBenchmark ? 2 : (strongRun ? 4 : 3)) + sepRoundBoost;
+    const sepBaseRounds = (strictBenchmark ? 6 : (strongRun ? 4 : 3)) + sepRoundBoost;
     const sepRes = separatorExactIntensify(
       inst,
       anchor.split,
@@ -6405,7 +6463,12 @@ function main(): void {
     sepImproved += sepRes.improved;
     if (sepRes.split) registerCandidate(`separator-exact-a${ai}+polish`, sepRes.split);
     if (sepRes.improved > 0) {
-      sepBonusRounds = Math.max(sepBonusRounds, strictBenchmark ? 1 : (strongRun ? 4 : 2));
+      if (Date.now() >= sepDeadline) {
+        sepTimeCapped = Date.now() >= sepDeadlineByCap ? 1 : 0;
+        sepReservedStop = Date.now() >= sepDeadlineByReserve ? 1 : 0;
+        break;
+      }
+      sepBonusRounds = Math.max(sepBonusRounds, strictBenchmark ? 2 : (strongRun ? 4 : 2));
       const bonusSeedSplit = sepRes.split ?? anchor.split;
       const sepBonus = separatorExactIntensify(
         inst,
@@ -6413,7 +6476,7 @@ function main(): void {
         K,
         spRng,
         bksPattern?.targetLoadsSorted,
-        strictBenchmark ? 1 : (strongRun ? 4 : 2)
+        strictBenchmark ? 2 : (strongRun ? 4 : 2)
       );
       sepTried += sepBonus.tried;
       sepImproved += sepBonus.improved;
@@ -6421,29 +6484,43 @@ function main(): void {
     }
   }
   const sepElapsedMs = Date.now() - sepStart;
+  if (sepTimeCapped) {
+    console.log("[Intensify] Separator hit wall-time cap; shifting budget to bundle.");
+  } else if (sepReservedStop) {
+    console.log("[Intensify] Separator stopped to preserve reserved bundle window.");
+  }
 
   const bundleStart = Date.now();
   let bundleTried = 0;
   let bundleImproved = 0;
   let bundlePass1Improved = 0;
   let bundlePass2Improved = 0;
-  for (let ai = 0; ai < intensifyAnchors.length && !budgetExceeded(); ai++) {
-    const anchor = intensifyAnchors[ai];
-    const bundleRes = routeBundleChainIntensify(
-      inst,
-      anchor.split,
-      K,
-      spRng,
-      bksPattern?.targetLoadsSorted,
-      (strictBenchmark ? 2 : (strongRun ? 5 : 4)) + (weakPathSkipped ? (strictBenchmark ? 0 : 2) : 0)
-    );
-    bundleTried += bundleRes.tried;
-    bundleImproved += bundleRes.improved;
-    bundlePass1Improved += bundleRes.pass1Improved;
-    bundlePass2Improved += bundleRes.pass2Improved;
-    if (bundleRes.split) registerCandidate(`bundle-exact-a${ai}+polish`, bundleRes.split);
+  const bundleWindowAvailableMs = Math.max(0, budgetDeadline - Date.now());
+  const bundleGuaranteed = bundleWindowAvailableMs >= bundleReservedTimeMs ? 1 : 0;
+  if (bundleWindowAvailableMs > 0 && !budgetExceeded()) {
+    for (let ai = 0; ai < intensifyAnchors.length && !budgetExceeded(); ai++) {
+      const anchor = intensifyAnchors[ai];
+      const bundleRes = routeBundleChainIntensify(
+        inst,
+        anchor.split,
+        K,
+        spRng,
+        bksPattern?.targetLoadsSorted,
+        (strictBenchmark ? 6 : (strongRun ? 5 : 4)) + (weakPathSkipped ? (strictBenchmark ? 1 : 2) : 0)
+      );
+      bundleTried += bundleRes.tried;
+      bundleImproved += bundleRes.improved;
+      bundlePass1Improved += bundleRes.pass1Improved;
+      bundlePass2Improved += bundleRes.pass2Improved;
+      if (bundleRes.split) registerCandidate(`bundle-exact-a${ai}+polish`, bundleRes.split);
+    }
+  } else {
+    console.log("[Intensify] No remaining budget for bundle stage.");
   }
   const bundleElapsedMs = Date.now() - bundleStart;
+  if (!bundleGuaranteed && strictBenchmark) {
+    console.log("[Intensify] Bundle ran with reduced window (< reserved target).");
+  }
 
   if (!budgetExceeded() && deferredHistorical) {
     const historicalPolished = polishCandidate(
@@ -6573,6 +6650,10 @@ function main(): void {
   console.log(`Strict benchmark:  ${strictBenchmark ? "YES" : "NO"}`);
   console.log(`Budget cap:        ${Math.round(benchmarkBudgetMs / 60000)} min`);
   console.log(`Seed pack:         ${seedPack.join(",")}`);
+  console.log(
+    `Engine ALNS:      lanes=${engineAlnsLanes} iters=${engineAlnsIterations} ` +
+    `tempEnd=${engineAlnsTempEnd} remove=${engineAlnsRemoveMin.toFixed(2)}..${engineAlnsRemoveMax.toFixed(2)}`
+  );
   console.log(`Total demand:      ${totalDemand}`);
   console.log(`Edge weight type:  ${inst.edgeWeightType}`);
   console.log(`Runtime(engine):   ${runtimeMs.toFixed(1)} ms`);

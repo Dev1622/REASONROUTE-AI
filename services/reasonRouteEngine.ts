@@ -40,6 +40,18 @@ export type Constraint = {
   arity: number;
 };
 
+export type AlnsOptions = {
+  enabled?: boolean;
+  maxIterations?: number;
+  timeBudgetMs?: number;
+  lanes?: number;
+  temperatureStart?: number;
+  temperatureEnd?: number;
+  reactionFactor?: number;
+  removeMinFrac?: number;
+  removeMaxFrac?: number;
+};
+
 export type EngineInput = {
   nodes: Node[];
   depotId: string;
@@ -56,6 +68,7 @@ export type EngineInput = {
     seed?: number;
     timeBudgetMs?: number;
     benchmarkPure?: boolean;
+    alns?: AlnsOptions;
   };
   benchmark?: {
     metric: "cvrplib_euc2d";
@@ -740,6 +753,480 @@ function separatorBoundaryRefineTour(
   return best;
 }
 
+type AlnsDestroyOperator = {
+  name: string;
+  level: "micro" | "macro";
+  run: (order: string[], removeCount: number) => { kept: string[]; removed: string[] };
+};
+
+type AlnsRepairOperator = {
+  name: string;
+  run: (kept: string[], removed: string[]) => string[];
+};
+
+type AlnsOperatorState<T extends { name: string }> = {
+  op: T;
+  weight: number;
+  reward: number;
+  used: number;
+};
+
+function computeOrderCost(
+  order: string[],
+  depotId: string,
+  nodeMap: Map<string, Node>,
+  ctx: TrafficContext
+): number {
+  const depot = nodeMap.get(depotId);
+  if (!depot) return Number.POSITIVE_INFINITY;
+  let cost = 0;
+  let prev = depot;
+  for (const id of order) {
+    const n = nodeMap.get(id);
+    if (!n) continue;
+    cost += getEdgeCost(prev, n, ctx).composite;
+    prev = n;
+  }
+  cost += getEdgeCost(prev, depot, ctx).composite;
+  return cost;
+}
+
+function insertionDeltaCost(
+  order: string[],
+  insertId: string,
+  pos: number,
+  depotId: string,
+  nodeMap: Map<string, Node>,
+  ctx: TrafficContext
+): number {
+  const depot = nodeMap.get(depotId);
+  const ins = nodeMap.get(insertId);
+  if (!depot || !ins) return Number.POSITIVE_INFINITY;
+  const prevId = pos > 0 ? order[pos - 1] : depotId;
+  const nextId = pos < order.length ? order[pos] : depotId;
+  const prev = nodeMap.get(prevId);
+  const next = nodeMap.get(nextId);
+  if (!prev || !next) return Number.POSITIVE_INFINITY;
+  const oldCost = getEdgeCost(prev, next, ctx).composite;
+  const newCost = getEdgeCost(prev, ins, ctx).composite + getEdgeCost(ins, next, ctx).composite;
+  return newCost - oldCost;
+}
+
+function bestInsertionPosition(
+  order: string[],
+  insertId: string,
+  depotId: string,
+  nodeMap: Map<string, Node>,
+  ctx: TrafficContext
+): { pos: number; delta: number } {
+  let bestPos = 0;
+  let bestDelta = Number.POSITIVE_INFINITY;
+  for (let pos = 0; pos <= order.length; pos++) {
+    const delta = insertionDeltaCost(order, insertId, pos, depotId, nodeMap, ctx);
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      bestPos = pos;
+    }
+  }
+  return { pos: bestPos, delta: bestDelta };
+}
+
+function applyGreedyRepair(
+  kept: string[],
+  removed: string[],
+  depotId: string,
+  nodeMap: Map<string, Node>,
+  ctx: TrafficContext
+): string[] {
+  const route = [...kept];
+  for (const id of removed) {
+    const { pos } = bestInsertionPosition(route, id, depotId, nodeMap, ctx);
+    route.splice(pos, 0, id);
+  }
+  return route;
+}
+
+function applyRegretKRepair(
+  kept: string[],
+  removed: string[],
+  depotId: string,
+  nodeMap: Map<string, Node>,
+  ctx: TrafficContext,
+  regretK = 2
+): string[] {
+  const route = [...kept];
+  const pending = [...removed];
+  while (pending.length > 0) {
+    let bestNodeIdx = 0;
+    let bestPos = 0;
+    let bestRegret = -1;
+    let bestDelta = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < pending.length; i++) {
+      const id = pending[i];
+      const choices: Array<{ pos: number; delta: number }> = [];
+      for (let pos = 0; pos <= route.length; pos++) {
+        choices.push({ pos, delta: insertionDeltaCost(route, id, pos, depotId, nodeMap, ctx) });
+      }
+      choices.sort((a, b) => a.delta - b.delta);
+      const first = choices[0];
+      const pivot = choices[Math.min(regretK - 1, choices.length - 1)];
+      const regret = pivot.delta - first.delta;
+      if (regret > bestRegret || (Math.abs(regret - bestRegret) < 1e-9 && first.delta < bestDelta)) {
+        bestRegret = regret;
+        bestDelta = first.delta;
+        bestNodeIdx = i;
+        bestPos = first.pos;
+      }
+    }
+    const chosen = pending.splice(bestNodeIdx, 1)[0];
+    route.splice(bestPos, 0, chosen);
+  }
+  return route;
+}
+
+function selectWeightedOperator<T extends { name: string }>(
+  states: Array<AlnsOperatorState<T>>,
+  rng: () => number
+): AlnsOperatorState<T> {
+  const total = states.reduce((s, x) => s + x.weight, 0);
+  if (total <= 0) return states[Math.floor(rng() * states.length)];
+  let pick = rng() * total;
+  for (const st of states) {
+    pick -= st.weight;
+    if (pick <= 0) return st;
+  }
+  return states[states.length - 1];
+}
+
+function updateAlnsOperatorWeights<T extends { name: string }>(
+  states: Array<AlnsOperatorState<T>>,
+  reactionFactor: number
+): void {
+  for (const st of states) {
+    if (st.used > 0) {
+      const perf = st.reward / st.used;
+      st.weight = Math.max(0.05, (1 - reactionFactor) * st.weight + reactionFactor * perf);
+    }
+    st.reward = 0;
+    st.used = 0;
+  }
+}
+
+function runAdaptiveAlnsTourRefinement(
+  startTour: string[],
+  nodes: Node[],
+  depotId: string,
+  nodeMap: Map<string, Node>,
+  ctx: TrafficContext,
+  rng: () => number,
+  timeBudgetMs: number,
+  maxIterations: number,
+  opts?: AlnsOptions
+): {
+  tour: string[];
+  cost: number;
+  bestCost: number;
+  iterations: number;
+  accepted: number;
+  improved: number;
+  destroyUsage: string;
+  repairUsage: string;
+} {
+  const customerIds = nodes.filter(n => n.id !== depotId).map(n => n.id);
+  const customerSet = new Set(customerIds);
+  const depotNode = nodeMap.get(depotId);
+  if (!depotNode || customerIds.length < 8) {
+    const clean = sanitizeClosedTour(startTour, nodes, depotId);
+    const score = evaluatePath(clean, nodeMap, ctx).composite;
+    return {
+      tour: clean,
+      cost: score,
+      bestCost: score,
+      iterations: 0,
+      accepted: 0,
+      improved: 0,
+      destroyUsage: "n/a",
+      repairUsage: "n/a",
+    };
+  }
+
+  const canonicalOrder = (tour: string[]): string[] => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const id of tour) {
+      if (id === depotId) continue;
+      if (!customerSet.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    for (const id of customerIds) {
+      if (!seen.has(id)) out.push(id);
+    }
+    return out;
+  };
+  const orderToClosed = (order: string[]): string[] => [depotId, ...order, depotId];
+  const pickIndices = (n: number, k: number): number[] => {
+    const idx = Array.from({ length: n }, (_, i) => i);
+    for (let i = n - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      const t = idx[i];
+      idx[i] = idx[j];
+      idx[j] = t;
+    }
+    return idx.slice(0, Math.max(0, Math.min(k, n)));
+  };
+  const nodeById = (id: string): Node | undefined => nodeMap.get(id);
+
+  const destroyOps: AlnsDestroyOperator[] = [
+    {
+      name: "random-node-removal",
+      level: "micro",
+      run: (order, removeCount) => {
+        const picked = new Set(pickIndices(order.length, removeCount));
+        const kept: string[] = [];
+        const removed: string[] = [];
+        for (let i = 0; i < order.length; i++) {
+          if (picked.has(i)) removed.push(order[i]);
+          else kept.push(order[i]);
+        }
+        return { kept, removed };
+      },
+    },
+    {
+      name: "cluster-removal",
+      level: "macro",
+      run: (order, removeCount) => {
+        if (order.length === 0) return { kept: [], removed: [] };
+        const center = order[Math.floor(rng() * order.length)];
+        const cNode = nodeById(center);
+        if (!cNode) return { kept: [...order], removed: [] };
+        const ranked = order
+          .map(id => {
+            const n = nodeById(id);
+            if (!n) return { id, d: Number.POSITIVE_INFINITY };
+            const dx = n.x - cNode.x;
+            const dy = n.y - cNode.y;
+            return { id, d: dx * dx + dy * dy };
+          })
+          .sort((a, b) => a.d - b.d);
+        const removeSet = new Set(ranked.slice(0, removeCount).map(x => x.id));
+        const kept = order.filter(id => !removeSet.has(id));
+        const removed = order.filter(id => removeSet.has(id));
+        return { kept, removed };
+      },
+    },
+    {
+      name: "route-segment-removal",
+      level: "macro",
+      run: (order, removeCount) => {
+        if (order.length === 0) return { kept: [], removed: [] };
+        const count = Math.max(1, Math.min(removeCount, order.length));
+        const start = Math.floor(rng() * order.length);
+        const removeSet = new Set<string>();
+        for (let i = 0; i < count; i++) {
+          removeSet.add(order[(start + i) % order.length]);
+        }
+        const kept = order.filter(id => !removeSet.has(id));
+        const removed = order.filter(id => removeSet.has(id));
+        return { kept, removed };
+      },
+    },
+    {
+      name: "depot-split-removal",
+      level: "macro",
+      run: (order, removeCount) => {
+        if (order.length === 0) return { kept: [], removed: [] };
+        const angle0 = rng() * Math.PI * 2;
+        const width = Math.PI * (0.18 + rng() * 0.12);
+        const candidates = order
+          .map(id => {
+            const n = nodeById(id);
+            if (!n) return { id, key: Number.POSITIVE_INFINITY, radial: Number.POSITIVE_INFINITY };
+            const dx = n.x - depotNode.x;
+            const dy = n.y - depotNode.y;
+            const angle = Math.atan2(dy, dx);
+            const wrapped = Math.abs((((angle - angle0) % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2) - Math.PI);
+            const radial = Math.sqrt(dx * dx + dy * dy);
+            return { id, key: wrapped, radial };
+          })
+          .sort((a, b) => (a.key - b.key) || (b.radial - a.radial));
+        const removeSet = new Set(
+          candidates
+            .filter(x => Number.isFinite(x.key) && x.key <= width)
+            .slice(0, Math.max(1, removeCount))
+            .map(x => x.id)
+        );
+        if (removeSet.size === 0) {
+          for (const x of candidates.slice(0, Math.max(1, removeCount))) removeSet.add(x.id);
+        }
+        const kept = order.filter(id => !removeSet.has(id));
+        const removed = order.filter(id => removeSet.has(id));
+        return { kept, removed };
+      },
+    },
+    {
+      name: "high-cost-edge-removal",
+      level: "micro",
+      run: (order, removeCount) => {
+        if (order.length <= 2) return { kept: [...order], removed: [] };
+        const closed = [depotId, ...order, depotId];
+        const scored: Array<{ id: string; score: number }> = [];
+        for (let i = 1; i < closed.length - 1; i++) {
+          const prev = nodeById(closed[i - 1]);
+          const cur = nodeById(closed[i]);
+          const next = nodeById(closed[i + 1]);
+          if (!prev || !cur || !next) continue;
+          const score =
+            getEdgeCost(prev, cur, ctx).composite +
+            getEdgeCost(cur, next, ctx).composite -
+            getEdgeCost(prev, next, ctx).composite;
+          scored.push({ id: closed[i], score });
+        }
+        scored.sort((a, b) => b.score - a.score);
+        const removeSet = new Set(scored.slice(0, removeCount).map(x => x.id));
+        const kept = order.filter(id => !removeSet.has(id));
+        const removed = order.filter(id => removeSet.has(id));
+        return { kept, removed };
+      },
+    },
+  ];
+
+  const repairOps: AlnsRepairOperator[] = [
+    {
+      name: "greedy-insert",
+      run: (kept, removed) => applyGreedyRepair(kept, removed, depotId, nodeMap, ctx),
+    },
+    {
+      name: "regret2-insert",
+      run: (kept, removed) => applyRegretKRepair(kept, removed, depotId, nodeMap, ctx, 2),
+    },
+    {
+      name: "cluster-aware-insert",
+      run: (kept, removed) => {
+        const sorted = [...removed].sort((a, b) => {
+          const na = nodeById(a);
+          const nb = nodeById(b);
+          if (!na || !nb) return 0;
+          const aa = Math.atan2(na.y - depotNode.y, na.x - depotNode.x);
+          const ab = Math.atan2(nb.y - depotNode.y, nb.x - depotNode.x);
+          return aa - ab;
+        });
+        return applyGreedyRepair(kept, sorted, depotId, nodeMap, ctx);
+      },
+    },
+  ];
+
+  const dStates: Array<AlnsOperatorState<AlnsDestroyOperator>> = destroyOps.map(op => ({
+    op,
+    weight: 1,
+    reward: 0,
+    used: 0,
+  }));
+  const rStates: Array<AlnsOperatorState<AlnsRepairOperator>> = repairOps.map(op => ({
+    op,
+    weight: 1,
+    reward: 0,
+    used: 0,
+  }));
+
+  let currentOrder = canonicalOrder(startTour);
+  let currentCost = computeOrderCost(currentOrder, depotId, nodeMap, ctx);
+  let bestOrder = [...currentOrder];
+  let bestCost = currentCost;
+  let accepted = 0;
+  let improved = 0;
+  let iterations = 0;
+
+  const startTemp = Math.max(1, opts?.temperatureStart ?? currentCost * 0.030);
+  const endTemp = Math.max(0.001, opts?.temperatureEnd ?? startTemp * 0.22);
+  const reaction = Math.max(0.02, Math.min(0.5, opts?.reactionFactor ?? 0.14));
+  const updateWindow = 25;
+  const removeMinFrac = Math.max(0.02, Math.min(0.40, opts?.removeMinFrac ?? 0.07));
+  const removeMaxFrac = Math.max(removeMinFrac + 0.01, Math.min(0.60, opts?.removeMaxFrac ?? 0.35));
+  const minRemove = Math.max(2, Math.floor(customerIds.length * removeMinFrac));
+  const maxRemove = Math.max(minRemove + 1, Math.floor(customerIds.length * removeMaxFrac));
+  const t0 = Date.now();
+  const macroEvery = Math.max(4, Math.floor(customerIds.length / 180));
+
+  while (iterations < maxIterations && Date.now() - t0 < timeBudgetMs) {
+    iterations++;
+    const progress = iterations / Math.max(1, maxIterations);
+    const temp = startTemp * Math.pow(endTemp / startTemp, progress);
+    const removeCount =
+      minRemove + Math.floor(rng() * (Math.max(1, maxRemove - minRemove + 1)));
+
+    let d: AlnsOperatorState<AlnsDestroyOperator>;
+    if (iterations % macroEvery === 0) {
+      const macroStates = dStates.filter(s => s.op.level === "macro");
+      d = macroStates.length > 0 ? selectWeightedOperator(macroStates, rng) : selectWeightedOperator(dStates, rng);
+    } else {
+      const microStates = dStates.filter(s => s.op.level === "micro");
+      d = microStates.length > 0 ? selectWeightedOperator(microStates, rng) : selectWeightedOperator(dStates, rng);
+    }
+    const r = selectWeightedOperator(rStates, rng);
+    d.used++;
+    r.used++;
+
+    const partial = d.op.run(currentOrder, removeCount);
+    if (partial.removed.length === 0) continue;
+    let candidateOrder = r.op.run(partial.kept, partial.removed);
+    candidateOrder = canonicalOrder(candidateOrder);
+
+    const candidateTour = twoOpt(orderToClosed(candidateOrder), nodeMap, ctx);
+    candidateOrder = canonicalOrder(candidateTour);
+    const candidateCost = computeOrderCost(candidateOrder, depotId, nodeMap, ctx);
+    const delta = candidateCost - currentCost;
+    const acceptProb = delta <= 0 ? 1 : Math.exp(-delta / Math.max(1e-6, temp));
+    const acceptedMove = delta <= 0 || rng() < acceptProb;
+
+    if (acceptedMove) {
+      accepted++;
+      currentOrder = candidateOrder;
+      currentCost = candidateCost;
+      if (candidateCost + 1e-9 < bestCost) {
+        bestCost = candidateCost;
+        bestOrder = [...candidateOrder];
+        improved++;
+        d.reward += 6;
+        r.reward += 6;
+      } else if (delta <= 0) {
+        d.reward += 3;
+        r.reward += 3;
+      } else {
+        d.reward += 1;
+        r.reward += 1;
+      }
+    } else {
+      d.reward += 0.15;
+      r.reward += 0.15;
+    }
+
+    if (iterations % updateWindow === 0) {
+      updateAlnsOperatorWeights(dStates, reaction);
+      updateAlnsOperatorWeights(rStates, reaction);
+    }
+  }
+
+  updateAlnsOperatorWeights(dStates, reaction);
+  updateAlnsOperatorWeights(rStates, reaction);
+
+  const usage = <T extends { name: string }>(states: Array<AlnsOperatorState<T>>): string =>
+    states.map(s => `${s.op.name}:${s.weight.toFixed(2)}`).join(", ");
+
+  const bestTour = sanitizeClosedTour(orderToClosed(bestOrder), nodes, depotId);
+  const bestTourCost = evaluatePath(bestTour, nodeMap, ctx).composite;
+  return {
+    tour: bestTour,
+    cost: currentCost,
+    bestCost: Math.min(bestCost, bestTourCost),
+    iterations,
+    accepted,
+    improved,
+    destroyUsage: usage(dStates),
+    repairUsage: usage(rStates),
+  };
+}
+
 function improveClosedTourEnsemble(
   nodes: Node[],
   depotId: string,
@@ -750,7 +1237,8 @@ function improveClosedTourEnsemble(
   logs: string[],
   mode: "fast" | "quality",
   seed: number,
-  timeBudgetMs: number
+  timeBudgetMs: number,
+  alnsOptions?: AlnsOptions
 ): string[] {
   const rng = makeRng(seed);
   const t0 = Date.now();
@@ -805,6 +1293,74 @@ function improveClosedTourEnsemble(
       add(refined);
       working = gnoptCompressCandidateTours(candidates, nodeMap, ctx, Math.min(12, candidates.length), logs);
     }
+  }
+
+  const alnsEnabled = alnsOptions?.enabled ?? true;
+  if (alnsEnabled && candidates.length > 0 && nodes.length >= 24) {
+    const sortedForAlns = [...working]
+      .map(t => ({ t, score: evaluatePath(t, nodeMap, ctx).composite }))
+      .sort((a, b) => a.score - b.score);
+    const lanes = Math.max(1, Math.min(4, alnsOptions?.lanes ?? (mode === "quality" ? 3 : 2)));
+    const laneCount = Math.min(lanes, sortedForAlns.length);
+    const alnsBudgetMs = Math.max(
+      20,
+      Math.min(
+        Math.max(20, timeBudgetMs),
+        alnsOptions?.timeBudgetMs ??
+          Math.max(30, Math.floor(timeBudgetMs * (mode === "quality" ? 0.72 : 0.55)))
+      )
+    );
+    const maxIterations = Math.max(
+      120,
+      Math.min(
+        15000,
+        alnsOptions?.maxIterations ?? (mode === "quality" ? 12000 : 5000)
+      )
+    );
+    const laneBudget = Math.max(15, Math.floor(alnsBudgetMs / laneCount));
+    logs.push(
+      `[Stage 3] ALNS enabled lanes=${laneCount} iterCap=${maxIterations} budget=${alnsBudgetMs}ms.`
+    );
+    let bestKnown = sortedForAlns[0].score;
+    let bestKnownTour = sortedForAlns[0].t;
+    for (let lane = 0; lane < laneCount; lane++) {
+      if ((Date.now() - t0) > timeBudgetMs) break;
+      const laneSeed = seed + 1009 * (lane + 1);
+      const laneRng = makeRng(laneSeed);
+      const startTour = lane === 0 ? bestKnownTour : sortedForAlns[lane].t;
+      const refined = runAdaptiveAlnsTourRefinement(
+        startTour,
+        nodes,
+        depotId,
+        nodeMap,
+        ctx,
+        laneRng,
+        laneBudget,
+        maxIterations,
+        alnsOptions
+      );
+      add(refined.tour);
+      if (refined.bestCost + 1e-9 < bestKnown) {
+        bestKnown = refined.bestCost;
+        bestKnownTour = refined.tour;
+      }
+      logs.push(
+        `[Stage 3][ALNS lane ${lane + 1}] iters=${refined.iterations} accepted=${refined.accepted} ` +
+          `improved=${refined.improved} best=${refined.bestCost.toFixed(2)}`
+      );
+      logs.push(`[Stage 3][ALNS lane ${lane + 1}] destroy=${refined.destroyUsage}`);
+      logs.push(`[Stage 3][ALNS lane ${lane + 1}] repair=${refined.repairUsage}`);
+    }
+    add(bestKnownTour);
+    working = mode === "quality"
+      ? gnoptCompressCandidateTours(
+          candidates,
+          nodeMap,
+          ctx,
+          Math.min(14, Math.max(8, Math.floor(candidates.length * 0.7))),
+          logs
+        )
+      : candidates;
   }
 
   const finalRanked = working
@@ -1294,7 +1850,8 @@ export function runReasonRouteEngine(input: EngineInput): EngineResult {
     logs,
     engineMode,
     engineSeed,
-    engineBudgetMs
+    engineBudgetMs,
+    input.optimization?.alns
   );
 
   // Evaluate on ORIGINAL nodeMap — same as baseline
