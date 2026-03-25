@@ -3329,7 +3329,8 @@ function separatorExactIntensify(
   K: number,
   rng: () => number,
   bksLoads?: number[],
-  rounds = 6
+  rounds = 6,
+  deadlineMs?: number
 ): { split?: SplitResult; tried: number; improved: number } {
   if (!incumbent.feasible || incumbent.routes.length !== K) return { tried: 0, improved: 0 };
   let current = incumbent;
@@ -3345,6 +3346,7 @@ function separatorExactIntensify(
   const relaxRatio = strongMode ? 0.006 : 0.004;
 
   for (let round = 0; round < rounds; round++) {
+    if (deadlineMs !== undefined && Date.now() >= deadlineMs) break;
     const angleA = rng() * Math.PI * 2;
     const angleB = angleA + Math.PI / 2 + (rng() - 0.5) * 0.24;
     const scoreByAngle = (angle: number): Array<{ idx: number; score: number }> =>
@@ -3401,6 +3403,7 @@ function separatorExactIntensify(
 
     let bestRoundCost = current.totalCost;
     for (const order of orders) {
+      if (deadlineMs !== undefined && Date.now() >= deadlineMs) break;
       tried++;
       const localSplit = splitExactK(inst, order, localK, bksLoads);
       if (!localSplit.feasible) continue;
@@ -3438,6 +3441,7 @@ function separatorExactIntensify(
         }
       }
     }
+    if (deadlineMs !== undefined && Date.now() >= deadlineMs) break;
     temp *= 0.92;
   }
 
@@ -3505,7 +3509,7 @@ function routeBundleExactIntensify(
       orders,
       localCustomers.slice(0, Math.min(localCustomers.length, strongMode ? 10 : 8)),
       [angleA, angleB],
-      strongMode ? 20 : 8
+      strongMode ? 30 : 8
     );
     const allOrders = [...new Map([...orders, ...branchOrders].map(o => [o.join(","), o])).values()];
     let bestRoundObj = Number.POSITIVE_INFINITY;
@@ -3797,6 +3801,7 @@ function trimPopulationByDiversity(
   pairs: Array<[number, number]>
 ): void {
   if (population.length <= cap) return;
+  const protectedCount = Math.max(1, Math.floor(cap * 0.3));
   while (population.length > cap) {
     population.sort((a, b) => a.split.totalCost - b.split.totalCost);
     const n = population.length;
@@ -3808,8 +3813,10 @@ function trimPopulationByDiversity(
       const crowdPenalty = 1 - div[i];
       fit.push({ idx: i, score: relCost + 0.65 * crowdPenalty });
     }
-    fit.sort((a, b) => b.score - a.score);
-    const drop = fit[0].idx;
+    const candidates = fit.filter(f => f.idx >= protectedCount);
+    if (candidates.length === 0) break;
+    candidates.sort((a, b) => b.score - a.score);
+    const drop = candidates[0].idx;
     population.splice(drop, 1);
   }
 }
@@ -5154,7 +5161,7 @@ function main(): void {
   const plateauBreakMode = runMode === "pure" && !rollbackTo1079Checkpoint;
   const strongRun = runProfile === "strong";
   const baseSeed = Number.isFinite(args.seed ?? NaN) ? Number(args.seed) : 20260217;
-  const seedPack = strongRun ? strongSeedPack(baseSeed) : [baseSeed];
+  const seedPack = [baseSeed]; // deterministic single-seed pack for strict runs
 
   const engineNodes: Node[] = Array.from(inst.nodes.entries()).map(([id, p]) => ({
     id: String(id),
@@ -5164,9 +5171,9 @@ function main(): void {
   }));
   const engineMode: "fast" | "quality" = (strongRun || strictBenchmark) ? "quality" : "fast";
   const engineBudgetMs = strictBenchmark ? (strongRun ? 1200 : 900) : (strongRun ? 700 : 420);
-  const engineAlnsBudgetMs = strictBenchmark ? (strongRun ? 900 : 700) : (strongRun ? 480 : 320);
-  const engineAlnsIterationsDefault = strictBenchmark ? (strongRun ? 12000 : 10500) : (strongRun ? 8000 : 5600);
-  const engineAlnsLanesDefault = strictBenchmark ? (strongRun ? 4 : 3) : (strongRun ? 3 : 2);
+  const engineAlnsBudgetMs = strictBenchmark ? 900 : (strongRun ? 480 : 320);
+  const engineAlnsIterationsDefault = strictBenchmark ? 10500 : (strongRun ? 8000 : 5600);
+  const engineAlnsLanesDefault = strictBenchmark ? 2 : 2;
   const engineAlnsIterations = Number.isFinite(args.alnsIters ?? NaN)
     ? Math.max(1000, Math.min(20000, Number(args.alnsIters)))
     : engineAlnsIterationsDefault;
@@ -5752,8 +5759,8 @@ function main(): void {
 
   // Minimal HGS layer: route-order population, OX crossover, mutate, split decode, then education.
   const hgsStart = Date.now();
-  const hgsMaxGenerations = strictBenchmark ? 42 : (strongRun ? 180 : 120);
-  const hgsPopulationCap = strictBenchmark ? 16 : (strongRun ? 24 : 20);
+  const hgsMaxGenerations = strictBenchmark ? 400 : (strongRun ? 240 : 160);
+  const hgsPopulationCap = strictBenchmark ? 80 : (strongRun ? 40 : 28);
   const hgsRng = makeRng(seedPack[0]);
   let hgsGenerations = 0;
   let hgsChildrenTried = 0;
@@ -6431,12 +6438,17 @@ function main(): void {
   const intensifyAnchors = budgetExceeded()
     ? []
     : chooseDiverseAnchorsForIntensify(inst, candidates, strictBenchmark ? 2 : (strongRun ? 3 : 2));
-  const separatorMaxTimeMs = strictBenchmark ? 180_000 : (strongRun ? 210_000 : 150_000);
-  const bundleReservedTimeMs = strictBenchmark ? 120_000 : (strongRun ? 120_000 : 90_000);
+  const separatorMaxTimeMs = strictBenchmark ? 90_000 : (strongRun ? 210_000 : 150_000);
+  const bundleReservedTimeMs = strictBenchmark ? 150_000 : (strongRun ? 120_000 : 90_000);
+  const endgameReservedTimeMs = strictBenchmark ? 120_000 : (strongRun ? 90_000 : 60_000);
+  const intensifyStart = Date.now();
+  const sepAbsoluteDeadline = intensifyStart + separatorMaxTimeMs;
+  const bundleAbsoluteDeadline = intensifyStart + separatorMaxTimeMs + bundleReservedTimeMs;
+  const endgameAbsoluteDeadline = bundleAbsoluteDeadline + endgameReservedTimeMs;
   const sepStart = Date.now();
   const sepDeadlineByCap = sepStart + separatorMaxTimeMs;
-  const sepDeadlineByReserve = budgetDeadline - bundleReservedTimeMs;
-  const sepDeadline = Math.max(sepStart, Math.min(sepDeadlineByCap, sepDeadlineByReserve));
+  const sepDeadlineByReserve = budgetDeadline - bundleReservedTimeMs - endgameReservedTimeMs;
+  const sepDeadline = Math.max(sepStart, Math.min(sepAbsoluteDeadline, sepDeadlineByReserve));
   let sepTried = 0;
   let sepImproved = 0;
   let sepBonusRounds = 0;
@@ -6462,26 +6474,7 @@ function main(): void {
     sepTried += sepRes.tried;
     sepImproved += sepRes.improved;
     if (sepRes.split) registerCandidate(`separator-exact-a${ai}+polish`, sepRes.split);
-    if (sepRes.improved > 0) {
-      if (Date.now() >= sepDeadline) {
-        sepTimeCapped = Date.now() >= sepDeadlineByCap ? 1 : 0;
-        sepReservedStop = Date.now() >= sepDeadlineByReserve ? 1 : 0;
-        break;
-      }
-      sepBonusRounds = Math.max(sepBonusRounds, strictBenchmark ? 2 : (strongRun ? 4 : 2));
-      const bonusSeedSplit = sepRes.split ?? anchor.split;
-      const sepBonus = separatorExactIntensify(
-        inst,
-        bonusSeedSplit,
-        K,
-        spRng,
-        bksPattern?.targetLoadsSorted,
-        strictBenchmark ? 2 : (strongRun ? 4 : 2)
-      );
-      sepTried += sepBonus.tried;
-      sepImproved += sepBonus.improved;
-      if (sepBonus.split) registerCandidate(`separator-exact-bonus-a${ai}+polish`, sepBonus.split);
-    }
+    // No bonus rounds for stability
   }
   const sepElapsedMs = Date.now() - sepStart;
   if (sepTimeCapped) {
@@ -6495,10 +6488,12 @@ function main(): void {
   let bundleImproved = 0;
   let bundlePass1Improved = 0;
   let bundlePass2Improved = 0;
-  const bundleWindowAvailableMs = Math.max(0, budgetDeadline - Date.now());
+  const bundleDeadline = Math.min(budgetDeadline - endgameReservedTimeMs, bundleAbsoluteDeadline);
+  const bundleWindowAvailableMs = Math.max(0, budgetDeadline - Date.now() - endgameReservedTimeMs);
   const bundleGuaranteed = bundleWindowAvailableMs >= bundleReservedTimeMs ? 1 : 0;
   if (bundleWindowAvailableMs > 0 && !budgetExceeded()) {
     for (let ai = 0; ai < intensifyAnchors.length && !budgetExceeded(); ai++) {
+      if (Date.now() >= bundleDeadline) break;
       const anchor = intensifyAnchors[ai];
       const bundleRes = routeBundleChainIntensify(
         inst,
@@ -6513,6 +6508,21 @@ function main(): void {
       bundlePass1Improved += bundleRes.pass1Improved;
       bundlePass2Improved += bundleRes.pass2Improved;
       if (bundleRes.split) registerCandidate(`bundle-exact-a${ai}+polish`, bundleRes.split);
+      if (bundleRes.improved > 0 && bundleRes.split && !budgetExceeded()) {
+        const bonusBundle = routeBundleChainIntensify(
+          inst,
+          bundleRes.split,
+          K,
+          spRng,
+          bksPattern?.targetLoadsSorted,
+          2
+        );
+        bundleTried += bonusBundle.tried;
+        bundleImproved += bonusBundle.improved;
+        bundlePass1Improved += bonusBundle.pass1Improved;
+        bundlePass2Improved += bonusBundle.pass2Improved;
+        if (bonusBundle.split) registerCandidate(`bundle-exact-bonus-a${ai}+polish`, bonusBundle.split);
+      }
     }
   } else {
     console.log("[Intensify] No remaining budget for bundle stage.");
@@ -6539,70 +6549,127 @@ function main(): void {
     if (inserted) historicalLateAccepted = 1;
   }
 
-  // Endgame intensification: incumbent-only heavy polish + SP reruns.
-  const endgameStart = Date.now();
-  const endgameMaxIterations = strictBenchmark
-    ? 4
-    : strongRun
-    ? (weakPathSkipped ? 24 : 16)
-    : (weakPathSkipped ? 12 : 9);
-  let endgameIterations = 0;
-  let endgameAccepted = 0;
-  let endgameSpAccepted = 0;
-  let seedRound = 0;
-  let endNoImprove = 0;
-  const endNoImproveLimit = weakPathSkipped ? (strongRun ? 8 : 6) : (strongRun ? 7 : 5);
-  let endgameEarlyStop = 0;
-  while (best && endgameIterations < endgameMaxIterations && !budgetExceeded()) {
-    const endBestBefore = incumbentCost();
-    const s = seedPack[seedRound % seedPack.length];
-    seedRound++;
-    endgameIterations++;
-    const deep = polishCandidate(
-      inst,
-      best.split,
-      990000 + s * 7 + endgameIterations * 17,
-      weakPathSkipped ? 32 : 24,
-      weakPathSkipped ? 230 : 190,
-      weakPathSkipped ? 80 : 62
-    );
-    const beforeCount = candidates.length;
-    registerCandidate(`endgame-heavy-${endgameIterations}`, deep);
-    if (candidates.length > beforeCount) endgameAccepted++;
-
-    if (!weakPathSkipped && endgameIterations % 3 === 0) {
-      const endPool = buildRoutePoolFromCandidates(inst, candidates, strongRun ? 130 : 110, strongRun ? 4200 : 3600);
-      const endExact = eliteRouteExactSelector(inst, best.split, endPool, K, strongRun ? 260_000 : 180_000);
-      if (endExact) {
-        const polishedEndExact = polishCandidate(inst, endExact, 991500 + s * 5 + endgameIterations * 11, 12, 70, 26);
-        registerCandidate(`endgame-exact-${endgameIterations}`, polishedEndExact);
-      }
-      const endSp = routePoolSpFinalizer(
+  // Endgame intensification: incumbent-only heavy polish + SP reruns with guaranteed window.
+  const endgameWindowAvailableMs = Math.max(0, budgetDeadline - Date.now());
+  const endgameGuaranteed = endgameWindowAvailableMs >= endgameReservedTimeMs ? 1 : 0;
+  let endgameElapsedMs = 0;
+  let endgameIterationsLog = 0;
+  let endgameAcceptedLog = 0;
+  let endgameSpAcceptedLog = 0;
+  let endNoImproveLog = 0;
+  let endNoImproveLimitLog = 0;
+  let endgameEarlyStopLog = 0;
+  if (!endgameGuaranteed && strictBenchmark) {
+    console.log(`[Endgame] WARNING: Only ${(endgameWindowAvailableMs / 1000).toFixed(1)}s available (< ${(endgameReservedTimeMs / 1000).toFixed(0)}s reserved). Separator/bundle overran.`);
+  }
+  if (endgameWindowAvailableMs > 0 && !budgetExceeded()) {
+    const endgameStart = Date.now();
+    console.log(`[Endgame] Starting with ${(endgameWindowAvailableMs / 1000).toFixed(1)}s available.`);
+    const endgameMaxIterations = strictBenchmark
+      ? 6
+      : strongRun
+      ? (weakPathSkipped ? 24 : 16)
+      : (weakPathSkipped ? 12 : 9);
+    let endgameIterations = 0;
+    let endgameAccepted = 0;
+    let endgameSpAccepted = 0;
+    let seedRound = 0;
+    let endNoImprove = 0;
+    const endNoImproveLimit = weakPathSkipped ? (strongRun ? 8 : 6) : (strongRun ? 7 : 5);
+    let endgameEarlyStop = 0;
+    while (best && endgameIterations < endgameMaxIterations && !budgetExceeded()) {
+      const endBestBefore = incumbentCost();
+      const s = seedPack[seedRound % seedPack.length];
+      seedRound++;
+      endgameIterations++;
+      const deep = polishCandidate(
         inst,
         best.split,
-        endPool,
-        K,
-        spRng,
-        strictBenchmark ? 2_000 : (strongRun ? 6_000 : 10_000),
-        strictBenchmark ? 90_000 : 260_000
+        990000 + s * 7 + endgameIterations * 17,
+        weakPathSkipped ? 32 : 24,
+        weakPathSkipped ? 230 : 190,
+        weakPathSkipped ? 80 : 62
       );
-      if (endSp.split) {
-        const polishedEndSp = polishCandidate(inst, endSp.split, 991000 + s * 3 + endgameIterations * 19, 14, 90, 30);
-        const beforeSp = candidates.length;
-        registerCandidate(`endgame-sp-${endgameIterations}`, polishedEndSp);
-        if (candidates.length > beforeSp) endgameSpAccepted++;
+      const beforeCount = candidates.length;
+      registerCandidate(`endgame-heavy-${endgameIterations}`, deep);
+      if (candidates.length > beforeCount) endgameAccepted++;
+
+      // Deterministic 3-opt sweep on incumbent
+      if (!budgetExceeded()) {
+        const k3Routes = deep.routes.map(r => threeOptRoute(inst, r, 2, 900));
+        const k3Cost = totalRouteCost(inst, k3Routes);
+        if (Number.isFinite(k3Cost) && k3Cost + 1e-9 < incumbentCost()) {
+          registerCandidate("endgame-3opt", {
+            routes: k3Routes,
+            feasible: true,
+            usedVehicles: deep.usedVehicles,
+            totalCost: k3Cost,
+          });
+          endgameAccepted++;
+        }
+      }
+
+      // Deterministic ejection chain sweep with small trials
+      if (!budgetExceeded()) {
+        const ejMap = buildCandidateMap(inst, strictBenchmark ? 22 : 30);
+        const ej = ejectionChainNeighborhood(inst, deep.routes, spRng, 200, ejMap, 3);
+        if (ej.totalCost + 1e-9 < incumbentCost()) {
+          registerCandidate("endgame-ejection", {
+            routes: ej.routes,
+            feasible: true,
+            usedVehicles: deep.usedVehicles,
+            totalCost: ej.totalCost,
+          });
+          endgameAccepted++;
+        }
+      }
+
+      if (!weakPathSkipped && endgameIterations % 3 === 0) {
+        const endPool = buildRoutePoolFromCandidates(inst, candidates, strongRun ? 130 : 110, strongRun ? 4200 : 3600);
+        const endExact = eliteRouteExactSelector(inst, best.split, endPool, K, strongRun ? 260_000 : 180_000);
+        if (endExact) {
+          const polishedEndExact = polishCandidate(inst, endExact, 991500 + s * 5 + endgameIterations * 11, 12, 70, 26);
+          registerCandidate(`endgame-exact-${endgameIterations}`, polishedEndExact);
+        }
+        const endSp = routePoolSpFinalizer(
+          inst,
+          best.split,
+          endPool,
+          K,
+          spRng,
+          strictBenchmark ? 2_000 : (strongRun ? 6_000 : 10_000),
+          strictBenchmark ? 90_000 : 260_000
+        );
+        if (endSp.split) {
+          const polishedEndSp = polishCandidate(inst, endSp.split, 991000 + s * 3 + endgameIterations * 19, 14, 90, 30);
+          const beforeSp = candidates.length;
+          registerCandidate(`endgame-sp-${endgameIterations}`, polishedEndSp);
+          if (candidates.length > beforeSp) endgameSpAccepted++;
+        }
+      }
+      const endBestAfter = incumbentCost();
+      if (endBestAfter + 1e-9 < endBestBefore) {
+        endNoImprove = 0;
+      } else {
+        endNoImprove++;
+        if (endNoImprove >= endNoImproveLimit) {
+          endgameEarlyStop = 1;
+          break;
+        }
       }
     }
-    const endBestAfter = incumbentCost();
-    if (endBestAfter + 1e-9 < endBestBefore) {
-      endNoImprove = 0;
-    } else {
-      endNoImprove++;
-      if (endNoImprove >= endNoImproveLimit) {
-        endgameEarlyStop = 1;
-        break;
-      }
+    endgameElapsedMs = Date.now() - endgameStart;
+    endgameIterationsLog = endgameIterations;
+    endgameAcceptedLog = endgameAccepted;
+    endgameSpAcceptedLog = endgameSpAccepted;
+    endNoImproveLog = endNoImprove;
+    endNoImproveLimitLog = endNoImproveLimit;
+    endgameEarlyStopLog = endgameEarlyStop;
+    if (!endgameGuaranteed && strictBenchmark) {
+      console.log("[Endgame] Completed with reduced window.");
     }
+  } else {
+    console.log("[Endgame] SKIPPED: No budget remaining (separator/bundle consumed all time).");
   }
   // Deferred rescue: revisit best parked near-incumbent candidates for extra gap reduction.
   if (!budgetExceeded() && deferredBank.length > 0) {
@@ -6631,7 +6698,6 @@ function main(): void {
       if (candidates.length > before) deferredAccepted++;
     }
   }
-  const endgameElapsedMs = Date.now() - endgameStart;
   if (best) structuralAfter = computeStructuralDiagnostics(inst, best.split.routes);
 
   const totalDemand = Array.from(inst.demands.entries())
@@ -6657,6 +6723,9 @@ function main(): void {
   console.log(`Total demand:      ${totalDemand}`);
   console.log(`Edge weight type:  ${inst.edgeWeightType}`);
   console.log(`Runtime(engine):   ${runtimeMs.toFixed(1)} ms`);
+  console.log(`[Budget] Separator: ${(sepElapsedMs / 1000).toFixed(1)}s / ${(separatorMaxTimeMs / 1000).toFixed(0)}s cap`);
+  console.log(`[Budget] Bundle:    ${(bundleElapsedMs / 1000).toFixed(1)}s / ${(bundleReservedTimeMs / 1000).toFixed(0)}s reserved`);
+  console.log(`[Budget] Endgame:   ${(endgameElapsedMs / 1000).toFixed(1)}s / ${(endgameReservedTimeMs / 1000).toFixed(0)}s reserved`);
 
   if (bksPattern) {
     console.log("\n--- BKS Pattern ---");
@@ -6739,10 +6808,10 @@ function main(): void {
   console.log(`BUNDLE improved:   ${bundleImproved}`);
   console.log(`BUNDLE p1/p2:      ${bundlePass1Improved}/${bundlePass2Improved}`);
   console.log(`BUNDLE elapsed:    ${bundleElapsedMs} ms`);
-  console.log(`Endgame iters:     ${endgameIterations}`);
-  console.log(`End stagnation:    ${endNoImprove}/${endNoImproveLimit}${endgameEarlyStop ? " (stop)" : ""}`);
-  console.log(`Endgame accepted:  ${endgameAccepted}`);
-  console.log(`Endgame SP adds:   ${endgameSpAccepted}`);
+  console.log(`Endgame iters:     ${endgameIterationsLog}`);
+  console.log(`End stagnation:    ${endNoImproveLog}/${endNoImproveLimitLog}${endgameEarlyStopLog ? " (stop)" : ""}`);
+  console.log(`Endgame accepted:  ${endgameAcceptedLog}`);
+  console.log(`Endgame SP adds:   ${endgameSpAcceptedLog}`);
   console.log(`Endgame elapsed:   ${endgameElapsedMs} ms`);
   console.log(`Mod-p tried:       ${modPTried}`);
   console.log(`Mod-p improved:    ${modPImproved}`);

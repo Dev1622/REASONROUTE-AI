@@ -1151,7 +1151,12 @@ function runAdaptiveAlnsTourRefinement(
   while (iterations < maxIterations && Date.now() - t0 < timeBudgetMs) {
     iterations++;
     const progress = iterations / Math.max(1, maxIterations);
-    const temp = startTemp * Math.pow(endTemp / startTemp, progress);
+    // Linear cooling instead of geometric â€” avoids an early temperature cliff
+    // and hits the target endTemp steadily each phase.
+    const temp = Math.max(
+      endTemp,
+      startTemp - (startTemp - endTemp) * progress
+    );
     const removeCount =
       minRemove + Math.floor(rng() * (Math.max(1, maxRemove - minRemove + 1)));
 
