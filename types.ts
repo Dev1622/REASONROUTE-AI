@@ -2,7 +2,7 @@ export interface Node {
   id: string;
   x: number; // Normalized 0-100
   y: number; // Normalized 0-100
-  type: 'hub' | 'stop' | 'warehouse';
+  type: 'hub' | 'stop' | 'warehouse' | 'depot' | 'virtual';
   label: string;
 }
 
@@ -19,6 +19,12 @@ export interface Metrics {
   emissions: number; // kg CO2
 }
 
+export interface Improvement {
+  distancePct: number;
+  timePct: number;
+  emissionsPct: number;
+}
+
 export interface OptimizationResult {
   nodes: Node[];
   baselinePath: string[]; // Array of Node IDs
@@ -27,7 +33,10 @@ export interface OptimizationResult {
   metrics: {
     baseline: Metrics;
     optimized: Metrics;
+    improvement: Improvement;
   };
+  engineLogs?: string[];
+  detectedPatterns?: { type: string; description: string; id: string; macroNodeId?: string }[];
   logs: string[]; // The reasoning steps
 }
 

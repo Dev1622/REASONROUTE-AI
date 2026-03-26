@@ -1,12 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, Play, Download, Terminal, AlertCircle, FileJson } from 'lucide-react';
+import { Upload, Play, Download, Terminal, AlertCircle, FileJson, X, Plus } from 'lucide-react';
 import clsx from 'clsx';
 import { OptimizationResult, ProcessingStatus } from '../types';
 
 interface SidebarProps {
-  onOptimize: (stops: string, image: File | null) => void;
+  onOptimize: (
+    stops: string,
+    images: File[],
+    preferences?: { weightTime?: number; weightEmissions?: number; weightDistance?: number }
+  ) => void;
   status: ProcessingStatus;
   result: OptimizationResult | null;
+  history: { ts: string; improvement: { distancePct: number; timePct: number; emissionsPct: number }; baseline: number; optimized: number }[];
 }
 
 const DEFAULT_STOPS = `Warehouse A (Hub)
@@ -18,10 +23,44 @@ District 5 - Downtown Core
 Warehouse B (Hub)
 `;
 
-const Sidebar: React.FC<SidebarProps> = ({ onOptimize, status, result }) => {
+const SAMPLE_SCENARIOS = [
+  {
+    label: '10-stop urban',
+    value: `Depot, 50, 50
+Mall, 62, 58
+Office Park, 70, 52
+Hospital, 60, 40
+Stadium, 48, 35
+Waterfront, 40, 30
+Old Town, 32, 44
+Tech Hub, 58, 66
+Apartments, 46, 60
+Warehouse B, 54, 74`,
+  },
+  {
+    label: 'Gridlock detour',
+    value: `Depot, 10, 10
+North Cluster, 20, 25
+Port, 15, 40
+Airport, 60, 80
+CBD, 55, 60
+Stadium, 52, 45
+Residential, 40, 55
+Clinic, 35, 35
+Rail Yard, 25, 50
+Hilltop, 18, 65`,
+  },
+];
+
+const Sidebar: React.FC<SidebarProps> = ({ onOptimize, status, result, history }) => {
   const [stops, setStops]           = useState(DEFAULT_STOPS);
-  const [image, setImage]           = useState<File | null>(null);
+  const [images, setImages]         = useState<File[]>([]);
   const [jsonFileName, setJsonFileName] = useState<string | null>(null);
+  const [weights, setWeights]       = useState({
+    weightTime: 0.5,
+    weightEmissions: 0.3,
+    weightDistance: 0.2,
+  });
   const logContainerRef             = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -31,7 +70,14 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, status, result }) => {
   }, [result?.logs, status]);
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files?.[0]) setImage(e.target.files[0]);
+    if (!e.target.files) return;
+    const next = [...images, ...Array.from(e.target.files)];
+    setImages(next);
+    e.target.value = '';
+  };
+
+  const handleWeightChange = (key: keyof typeof weights) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    setWeights(prev => ({ ...prev, [key]: Number(e.target.value) }));
   };
 
   // ── JSON Upload handler ────────────────────────────────────────
@@ -140,26 +186,41 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, status, result }) => {
                 Delivery Stops (CSV/Text)
               </label>
 
-              {/* JSON upload — sits inline with the label, no layout disruption */}
-              <label
-                className={clsx(
-                  'flex items-center gap-1.5 text-[10px] font-mono px-2 py-1 rounded border cursor-pointer transition-colors select-none',
-                  isProcessing
-                    ? 'border-slate-800 text-slate-700 cursor-not-allowed'
-                    : 'border-slate-700 text-slate-400 hover:text-emerald-400 hover:border-emerald-500/50 active:scale-95'
-                )}
-                title="Upload a JSON file (EngineInput format or array of stops)"
-              >
-                <FileJson className="w-3 h-3 flex-shrink-0" />
-                <span>{jsonFileName ? jsonFileName.slice(0, 14) + (jsonFileName.length > 14 ? '…' : '') : 'Upload JSON'}</span>
-                <input
-                  type="file"
-                  className="hidden"
-                  accept=".json,application/json"
-                  onChange={handleJsonUpload}
-                  disabled={isProcessing}
-                />
-              </label>
+              <div className="flex items-center gap-2">
+                {SAMPLE_SCENARIOS.map(s => (
+                  <button
+                    key={s.label}
+                    type="button"
+                    className="text-[10px] font-mono px-2 py-1 rounded border border-slate-700 text-slate-400 hover:text-emerald-300 hover:border-emerald-500/40 transition-colors"
+                    onClick={() => setStops(s.value)}
+                    disabled={isProcessing}
+                    title={`Load sample: ${s.label}`}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+
+                {/* JSON upload — sits inline with the label, no layout disruption */}
+                <label
+                  className={clsx(
+                    'flex items-center gap-1.5 text-[10px] font-mono px-2 py-1 rounded border cursor-pointer transition-colors select-none',
+                    isProcessing
+                      ? 'border-slate-800 text-slate-700 cursor-not-allowed'
+                      : 'border-slate-700 text-slate-400 hover:text-emerald-400 hover:border-emerald-500/50 active:scale-95'
+                  )}
+                  title="Upload a JSON file (EngineInput format or array of stops)"
+                >
+                  <FileJson className="w-3 h-3 flex-shrink-0" />
+                  <span>{jsonFileName ? jsonFileName.slice(0, 14) + (jsonFileName.length > 14 ? '...' : '') : 'Upload JSON'}</span>
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept=".json,application/json"
+                    onChange={handleJsonUpload}
+                    disabled={isProcessing}
+                  />
+                </label>
+              </div>
             </div>
 
             <textarea
@@ -171,40 +232,118 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, status, result }) => {
             />
           </div>
 
-          {/* Image upload (unchanged) */}
+          {/* Preference weights */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                Preference Weights
+              </label>
+              <span className="text-[10px] text-slate-500 font-mono">
+                Time / Emissions / Distance
+              </span>
+            </div>
+            {([
+              { key: 'weightTime', label: 'Time Priority' },
+              { key: 'weightEmissions', label: 'Emissions Priority' },
+              { key: 'weightDistance', label: 'Distance Priority' },
+            ] as const).map(({ key, label }) => (
+              <div key={key} className="flex items-center gap-3">
+                <span className="w-28 text-[11px] text-slate-400">{label}</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={weights[key]}
+                  onChange={handleWeightChange(key)}
+                  disabled={isProcessing}
+                  className="flex-1 accent-emerald-500"
+                />
+                <span className="w-10 text-right text-[11px] font-mono text-slate-400">
+                  {weights[key].toFixed(2)}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {/* Image upload / management */}
           <div>
             <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
               Context Awareness
             </label>
             <div className={clsx(
               'border-2 border-dashed border-slate-800 rounded-md p-4 transition-colors',
-              image ? 'bg-emerald-950/20 border-emerald-500/30' : 'hover:border-slate-600'
+              images.length ? 'bg-emerald-950/20 border-emerald-500/30' : 'hover:border-slate-600'
             )}>
               <label className="flex flex-col items-center cursor-pointer">
-                <Upload className={clsx('w-6 h-6 mb-2', image ? 'text-emerald-400' : 'text-slate-600')} />
+                <Upload className={clsx('w-6 h-6 mb-2', images.length ? 'text-emerald-400' : 'text-slate-600')} />
                 <span className="text-xs text-slate-500">
-                  {image ? image.name : 'Upload Heatmap / Traffic Image'}
+                  {images.length ? `${images.length} image${images.length > 1 ? 's' : ''} attached` : 'Upload Heatmap / Traffic Image'}
                 </span>
                 <input
                   type="file"
                   className="hidden"
                   onChange={handleImageChange}
                   accept="image/*"
+                  multiple
                   disabled={isProcessing}
                 />
               </label>
             </div>
-            {image && (
-              <p className="text-[10px] text-emerald-500/80 mt-1 flex items-center">
-                <AlertCircle className="w-3 h-3 mr-1" />
-                Spatial override enabled
-              </p>
+            {images.length > 0 && (
+              <div className="mt-2 space-y-2">
+                <p className="text-[10px] text-emerald-500/80 flex items-center">
+                  <AlertCircle className="w-3 h-3 mr-1" />
+                  Spatial override enabled
+                </p>
+                <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
+                  {images.map((img, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-center justify-between text-[11px] bg-slate-950/60 border border-slate-800 rounded px-2 py-1"
+                    >
+                      <span className="truncate mr-2">{img.name}</span>
+                      <button
+                        type="button"
+                        className="text-slate-500 hover:text-red-400 transition-colors"
+                        onClick={() => setImages(prev => prev.filter((_, i) => i !== idx))}
+                        disabled={isProcessing}
+                        aria-label={`Remove ${img.name}`}
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2 text-[11px]">
+                  <label className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-700 hover:border-emerald-500/40 hover:text-emerald-300 text-slate-400 cursor-pointer transition-colors">
+                    <Plus className="w-3 h-3" />
+                    Add more
+                    <input
+                      type="file"
+                      className="hidden"
+                      onChange={handleImageChange}
+                      accept="image/*"
+                      multiple
+                      disabled={isProcessing}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="text-slate-500 hover:text-red-400 px-2 py-1 rounded border border-transparent hover:border-red-500/40 transition-colors"
+                    onClick={() => setImages([])}
+                    disabled={isProcessing}
+                  >
+                    Clear all
+                  </button>
+                </div>
+              </div>
             )}
           </div>
 
           {/* Optimize button (unchanged) */}
           <button
-            onClick={() => onOptimize(stops, image)}
+            onClick={() => onOptimize(stops, images, weights)}
             disabled={isProcessing}
             className={clsx(
               'w-full py-3 px-4 rounded-md flex items-center justify-center font-bold transition-all',
@@ -258,6 +397,34 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, status, result }) => {
             {status === ProcessingStatus.ERROR && (
               <div className="text-red-500"> SYSTEM ERROR: Optimization failed.</div>
             )}
+          </div>
+        </div>
+
+        {/* Run history */}
+        <div className="flex flex-col">
+          <label className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
+            Recent Runs
+          </label>
+          <div className="bg-slate-950 rounded-md border border-slate-800 p-3 space-y-2 max-h-36 overflow-y-auto">
+            {history.length === 0 && (
+              <div className="text-slate-600 text-xs italic">No runs yet.</div>
+            )}
+            {history.map((h, idx) => (
+              <div
+                key={`${h.ts}-${idx}`}
+                className="flex items-center justify-between text-[11px] bg-slate-900/60 border border-slate-800 rounded px-2 py-1"
+              >
+                <div className="flex flex-col">
+                  <span className="text-slate-300 font-mono">
+                    {new Date(h.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                  <span className="text-slate-500">Δ {h.baseline.toFixed(1)} → {h.optimized.toFixed(1)} km</span>
+                </div>
+                <div className="text-emerald-400 font-mono">
+                  {h.improvement.distancePct > 0 ? `-${h.improvement.distancePct}%` : `${h.improvement.distancePct}%`}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>

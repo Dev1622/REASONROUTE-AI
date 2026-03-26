@@ -8,37 +8,51 @@ import { OptimizationResult, ProcessingStatus } from './types';
 const App: React.FC = () => {
   const [status, setStatus] = useState<ProcessingStatus>(ProcessingStatus.IDLE);
   const [result, setResult] = useState<OptimizationResult | null>(null);
+  const [history, setHistory] = useState<
+    { ts: string; improvement: OptimizationResult['metrics']['improvement']; baseline: number; optimized: number }[]
+  >([]);
 
-  const handleOptimization = async (stopsInput: string, image: File | null) => {
+  const handleOptimization = async (
+    stopsInput: string,
+    images: File[],
+    preferences?: { weightTime?: number; weightEmissions?: number; weightDistance?: number }
+  ) => {
     setStatus(ProcessingStatus.ANALYZING);
     setResult(null); // Reset previous results
 
     try {
-      let imageBase64 = undefined;
-      let imageMimeType = undefined;
-
-      if (image) {
-        imageMimeType = image.type;
-        imageBase64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            // Remove the data URL prefix (e.g., "data:image/jpeg;base64,")
-            const result = reader.result as string;
-            const base64 = result.split(',')[1];
-            resolve(base64);
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(image);
-        });
-      }
+      const encodedImages = await Promise.all(
+        images.map(
+          (file) =>
+            new Promise<{ base64: string; mimeType: string }>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => {
+                const result = reader.result as string;
+                const base64 = result.split(',')[1];
+                resolve({ base64, mimeType: file.type });
+              };
+              reader.onerror = reject;
+              reader.readAsDataURL(file);
+            })
+        )
+      );
 
       // Simulate step-by-step UI updates for effect (since API is single call)
       /*setTimeout(() => setStatus(ProcessingStatus.COMPRESSING), 1500);*/
       
-      const apiResult = await optimizeRoute(stopsInput, imageBase64, imageMimeType);
+      const apiResult = await optimizeRoute(stopsInput, encodedImages, preferences);
       
       setResult(apiResult);
       setStatus(ProcessingStatus.COMPLETE);
+      setHistory(prev => [
+        {
+          ts: new Date().toISOString(),
+          improvement: apiResult.metrics.improvement,
+          baseline: apiResult.metrics.baseline.distance,
+          optimized: apiResult.metrics.optimized.distance,
+        },
+        ...prev,
+      ].slice(0, 6));
 
     } catch (error) {
       console.error(error);
@@ -54,6 +68,7 @@ const App: React.FC = () => {
           onOptimize={handleOptimization} 
           status={status}
           result={result}
+          history={history}
         />
       </div>
 
@@ -80,7 +95,8 @@ const App: React.FC = () => {
             {result && result.metrics ? (
                 <MetricsDashboard 
                     baseline={result.metrics.baseline} 
-                    optimized={result.metrics.optimized} 
+                    optimized={result.metrics.optimized}
+                    improvement={result.metrics.improvement}
                 />
             ) : (
                 <div className="flex items-center justify-center h-24 border border-dashed border-slate-800 rounded-lg text-slate-600 text-sm font-mono">

@@ -1,14 +1,5 @@
 // reasonRouteEngine.ts
-// GNOPT-Inspired Spatial Reasoning Engine v4.0
-// Pure deterministic math — no AI calls here.
-// FIX SUMMARY (this version):
-//   1. recursiveSolve now returns OPEN paths (no closing node).
-//      Closed tours from nearestNeighbor are stripped to open before stitching.
-//      This prevents intermediate depot visits in the middle of long routes.
-//   2. finalPath is explicitly closed with depotId at the end.
-//      Previously expandGadgets returned an open path and finalPath was never closed,
-//      so evaluatePath was missing the last edge back to depot — making optimized
-//      metrics incomparable with baseline (which was always closed).
+// GNOPT-Inspired Spatial Reasoning Engine v4.0 
 
 import {
   Node,

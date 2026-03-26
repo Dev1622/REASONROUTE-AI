@@ -6,6 +6,7 @@ import clsx from 'clsx';
 interface MetricsDashboardProps {
   baseline: Metrics;
   optimized: Metrics;
+  improvement?: { distancePct: number; timePct: number; emissionsPct: number };
 }
 
 const MetricCard: React.FC<{ 
@@ -15,9 +16,14 @@ const MetricCard: React.FC<{
   unit: string; 
   icon: React.ReactNode;
   colorClass: string;
-}> = ({ label, base, opt, unit, icon, colorClass }) => {
+  percentOverride?: number;
+}> = ({ label, base, opt, unit, icon, colorClass, percentOverride }) => {
   const diff = base - opt;
-  const percent = ((diff / base) * 100).toFixed(1);
+  const percent = percentOverride !== undefined
+    ? percentOverride.toFixed(1)
+    : base !== 0
+      ? ((diff / base) * 100).toFixed(1)
+      : '0.0';
 
   return (
     <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700 backdrop-blur-sm">
@@ -42,7 +48,7 @@ const MetricCard: React.FC<{
   );
 };
 
-const MetricsDashboard: React.FC<MetricsDashboardProps> = ({ baseline, optimized }) => {
+const MetricsDashboard: React.FC<MetricsDashboardProps> = ({ baseline, optimized, improvement }) => {
   return (
     <div className="grid grid-cols-3 gap-4 w-full">
       <MetricCard 
@@ -52,6 +58,7 @@ const MetricsDashboard: React.FC<MetricsDashboardProps> = ({ baseline, optimized
         unit="km" 
         icon={<TrendingDown className="w-4 h-4 text-blue-400" />}
         colorClass="text-blue-400"
+        percentOverride={improvement?.distancePct}
       />
       <MetricCard 
         label="Est. Time" 
@@ -60,14 +67,16 @@ const MetricsDashboard: React.FC<MetricsDashboardProps> = ({ baseline, optimized
         unit="min" 
         icon={<Clock className="w-4 h-4 text-amber-400" />}
         colorClass="text-amber-400"
+        percentOverride={improvement?.timePct}
       />
       <MetricCard 
         label="Emissions" 
         base={baseline.emissions} 
         opt={optimized.emissions} 
-        unit="kg CO₂" 
+        unit="kg CO2" 
         icon={<Leaf className="w-4 h-4 text-emerald-400" />}
         colorClass="text-emerald-400"
+        percentOverride={improvement?.emissionsPct}
       />
     </div>
   );

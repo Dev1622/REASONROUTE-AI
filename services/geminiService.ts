@@ -13,7 +13,26 @@ import {
   CompressionPattern,
 } from "./reasonRouteEngine";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Resolve API key in both Node (CLI) and Vite/browser builds.
+const apiKey =
+  // Node / ts-node / server
+  (typeof process !== "undefined" && process.env
+    ? process.env.API_KEY ?? process.env.GEMINI_API_KEY
+    : undefined) ??
+  // Vite client
+  (typeof import.meta !== "undefined" && (import.meta as any).env
+    ? (import.meta as any).env.VITE_API_KEY ?? (import.meta as any).env.VITE_GEMINI_API_KEY
+    : undefined);
+
+const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
+
+// Simple timeout wrapper to avoid indefinite hangs when external calls stall.
+async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: () => T | Promise<T>): Promise<T> {
+  return await Promise.race([
+    promise,
+    new Promise<T>(resolve => setTimeout(() => resolve(fallback()), ms)),
+  ]);
+}
 
 // ─────────────────────────────────────────────────────────
 // Public result type (unchanged)
@@ -101,6 +120,8 @@ async function extractDisruptionsFromImage(
   imageBase64: string,
   imageMimeType: string
 ): Promise<DisruptionZone[]> {
+  if (!ai) return [];
+
   const prompt = `
 Analyze this traffic heatmap or road condition image.
 Identify disruption zones: traffic jams, road closures, floods, construction, accidents.
@@ -115,16 +136,20 @@ Return ONLY a valid JSON array. If nothing found, return [].
 `;
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: {
-        parts: [
-          { inlineData: { data: imageBase64, mimeType: imageMimeType } },
-          { text: prompt },
-        ],
-      },
-      config: { responseMimeType: "application/json", temperature: 0 },
-    });
+    const response = await withTimeout(
+      ai.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: {
+          parts: [
+            { inlineData: { data: imageBase64, mimeType: imageMimeType } },
+            { text: prompt },
+          ],
+        },
+        config: { responseMimeType: "application/json", temperature: 0 },
+      }),
+      6000,
+      () => ({ text: "[]" } as any)
+    );
 
     const text    = response.text ?? "[]";
     const cleaned = text.replace(/```json|```/g, "").trim();
@@ -143,6 +168,13 @@ async function generateReasoningLog(
   engineResult: EngineResult,
   disruptions: DisruptionZone[]
 ): Promise<string[]> {
+  if (!ai) {
+    return engineResult.engineLogs.slice(1, 7).map((log, i) => {
+      const n = String(i).padStart(2, "0");
+      return `[${n}] ${log.replace(/^\[[^\]]+\]\s*/, "")}`;
+    });
+  }
+
   const labelOf = (id: string) => (nodes.find(n => n.id === id) as any)?.label ?? id;
 
   const baselinePath  = engineResult.baselinePath.map(labelOf).join(" → ");
@@ -178,11 +210,15 @@ Output ONLY the JSON array.
 `;
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: { parts: [{ text: prompt }] },
-      config: { responseMimeType: "application/json", temperature: 0.2 },
-    });
+    const response = await withTimeout(
+      ai.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: { parts: [{ text: prompt }] },
+        config: { responseMimeType: "application/json", temperature: 0.2 },
+      }),
+      6000,
+      () => ({ text: "[]" } as any)
+    );
 
     const text    = response.text ?? "[]";
     const cleaned = text.replace(/```json|```/g, "").trim();
@@ -200,10 +236,11 @@ Output ONLY the JSON array.
 // Main export (unchanged interface)
 // ─────────────────────────────────────────────────────────
 
+type ContextImage = { base64: string; mimeType: string };
+
 export const optimizeRoute = async (
   stopsInput: string,
-  contextImageBase64?: string,
-  contextImageMimeType?: string,
+  contextImages: ContextImage[] = [],
   preferences?: {
     weightTime?: number;
     weightEmissions?: number;
@@ -216,39 +253,38 @@ export const optimizeRoute = async (
   let disruptions: DisruptionZone[] = [];
   let heatmapForEngine: number[][] | undefined;
 
-  if (contextImageBase64 && contextImageMimeType) {
-    disruptions = await extractDisruptionsFromImage(contextImageBase64, contextImageMimeType);
+  if (contextImages.length > 0) {
+    const GRID = 100;
+    const grid: number[][] = Array.from({ length: GRID }, () => new Array(GRID).fill(0));
 
-    if (disruptions.length > 0) {
-      // Build a 100×100 grid.
-      // FIX: grid is indexed as grid[row][col] where row=y, col=x
-      // to match getEdgeCost lookup: r=floor((y/100)*rows), c=floor((x/100)*cols)
-      // Previously the loop used grid[nx][ny] = grid[x][y] which is transposed —
-      // disruptions at (x,y) were written to row=x instead of row=y.
-      const GRID = 100;
-      const grid: number[][] = Array.from({ length: GRID }, () => new Array(GRID).fill(0));
+    for (const { base64, mimeType } of contextImages) {
+      const zones = await extractDisruptionsFromImage(base64, mimeType);
+      disruptions.push(...zones);
 
-      for (const zone of disruptions) {
+      for (const zone of zones) {
         const cx = Math.round(Math.min(GRID - 1, Math.max(0, zone.x)));
         const cy = Math.round(Math.min(GRID - 1, Math.max(0, zone.y)));
         const r  = Math.max(1, Math.min(30, zone.radius));
 
         for (let dx = -r; dx <= r; dx++) {
           for (let dy = -r; dy <= r; dy++) {
-            const col = cx + dx;   // x → column
-            const row = cy + dy;   // y → row
+            const col = cx + dx;   // x -> column
+            const row = cy + dy;   // y -> row
             if (row >= 0 && row < GRID && col >= 0 && col < GRID) {
               const dist     = Math.sqrt(dx * dx + dy * dy);
               const severity = Math.max(0, 1 - dist / r) * 0.9;
-              // grid[row][col] — consistent with getEdgeCost lookup
               grid[row][col] = Math.max(grid[row][col], severity);
             }
           }
         }
       }
+    }
+
+    if (disruptions.length > 0) {
       heatmapForEngine = grid;
     }
   }
+  // If Gemini is unavailable / timed out, still return deterministic baseline/optimized without disruptions.
 
   const engineInput: EngineInput = {
     nodes,
