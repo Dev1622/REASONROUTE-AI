@@ -14,17 +14,18 @@ import {
 } from "./reasonRouteEngine";
 
 // Resolve API key in both Node (CLI) and Vite/browser builds.
+// Prefer GEMINI_API_KEY; keep API_KEY/VITE_API_KEY as legacy fallbacks.
 const apiKey =
-  // Node / ts-node / server
   (typeof process !== "undefined" && process.env
-    ? process.env.API_KEY ?? process.env.GEMINI_API_KEY
+    ? process.env.GEMINI_API_KEY ?? process.env.API_KEY
     : undefined) ??
-  // Vite client
   (typeof import.meta !== "undefined" && (import.meta as any).env
-    ? (import.meta as any).env.VITE_API_KEY ?? (import.meta as any).env.VITE_GEMINI_API_KEY
+    ? (import.meta as any).env.VITE_GEMINI_API_KEY ?? (import.meta as any).env.VITE_API_KEY
     : undefined);
 
 const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
+// NOTE: If you see fallback logs in the UI, open DevTools and check for
+// "[gemini-error]" entries — they'll surface any auth/CORS/model issues.
 
 // Simple timeout wrapper to avoid indefinite hangs when external calls stall.
 async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: () => T | Promise<T>): Promise<T> {
@@ -138,7 +139,7 @@ Return ONLY a valid JSON array. If nothing found, return [].
   try {
     const response = await withTimeout(
       ai.models.generateContent({
-        model: "gemini-2.0-flash",
+        model: "gemini-2.5-flash",
         contents: {
           parts: [
             { inlineData: { data: imageBase64, mimeType: imageMimeType } },
@@ -147,7 +148,7 @@ Return ONLY a valid JSON array. If nothing found, return [].
         },
         config: { responseMimeType: "application/json", temperature: 0 },
       }),
-      6000,
+      12000,
       () => ({ text: "[]" } as any)
     );
 
@@ -168,12 +169,40 @@ async function generateReasoningLog(
   engineResult: EngineResult,
   disruptions: DisruptionZone[]
 ): Promise<string[]> {
-  if (!ai) {
-    return engineResult.engineLogs.slice(1, 7).map((log, i) => {
-      const n = String(i).padStart(2, "0");
-      return `[${n}] ${log.replace(/^\[[^\]]+\]\s*/, "")}`;
-    });
-  }
+  const buildLocalLog = () => {
+    const { baseline, optimized, improvement } = engineResult.metrics;
+    const lines: string[] = [];
+    lines.push(
+      `[00] Context: ${engineResult.baselinePath.length - 1} legs, ` +
+      `${(baseline.distance).toFixed(1)} km base, weights active.`
+    );
+    lines.push(
+      `[01] Baseline: nearest-neighbor + 2-opt scored ${baseline.composite.toFixed(2)} (dist/time/emiss ${baseline.distance.toFixed(1)} km / ${baseline.time.toFixed(1)} min / ${(baseline.emissions/1000).toFixed(2)} kg).`
+    );
+    if (engineResult.detectedPatterns?.length) {
+      lines.push(
+        `[02] Patterns: ${engineResult.detectedPatterns.map(p => `${p.type}`).join(", ")} detected; compressed graph explored.`
+      );
+    } else {
+      lines.push(`[02] Patterns: none detected (sparse graph).`);
+    }
+    lines.push(
+      `[03] Optimized: composite ${optimized.composite.toFixed(2)} with detours => ${optimized.distance.toFixed(1)} km, ${optimized.time.toFixed(1)} min, ${(optimized.emissions/1000).toFixed(2)} kg.`
+    );
+    if (disruptions.length > 0) {
+      lines.push(`[04] Image context: ${disruptions.length} disruption zone(s) applied to cost grid.`);
+    } else {
+      lines.push(`[04] Image context: none applied.`);
+    }
+    lines.push(
+      `[05] Net improvement: dist ${improvement.distancePct}% | time ${improvement.timePct}% | emissions ${improvement.emissionsPct}%.`
+    );
+    return lines;
+  };
+
+  const fallback = () => buildLocalLog();
+
+  if (!ai || !apiKey) return fallback();
 
   const labelOf = (id: string) => (nodes.find(n => n.id === id) as any)?.label ?? id;
 
@@ -212,23 +241,21 @@ Output ONLY the JSON array.
   try {
     const response = await withTimeout(
       ai.models.generateContent({
-        model: "gemini-2.0-flash",
+        model: "gemini-2.5-flash",
         contents: { parts: [{ text: prompt }] },
         config: { responseMimeType: "application/json", temperature: 0.2 },
       }),
-      6000,
+      8000,
       () => ({ text: "[]" } as any)
     );
 
     const text    = response.text ?? "[]";
     const cleaned = text.replace(/```json|```/g, "").trim();
     const parsed  = JSON.parse(cleaned);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return engineResult.engineLogs.slice(1, 7).map((log, i) => {
-      const n = String(i).padStart(2, "0");
-      return `[${n}] ${log.replace(/^\[[^\]]+\]\s*/, "")}`;
-    });
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : fallback();
+  } catch (err) {
+    console.error("[Gemini] reasoning log failed", err);
+    return fallback();
   }
 }
 
@@ -245,7 +272,8 @@ export const optimizeRoute = async (
     weightTime?: number;
     weightEmissions?: number;
     weightDistance?: number;
-  }
+  },
+  optimization?: { mode?: 'fast' | 'quality'; timeBudgetMs?: number; baselineMode?: 'dynamic' | 'distance' }
 ): Promise<OptimizationResult> => {
 
   const { nodes, depotId } = parseStopsToNodes(stopsInput);
@@ -296,6 +324,11 @@ export const optimizeRoute = async (
       weightEmissions: preferences?.weightEmissions ?? 0.3,
       weightDistance:  preferences?.weightDistance  ?? 0.2,
     },
+    optimization: {
+      mode: optimization?.mode,
+      timeBudgetMs: optimization?.timeBudgetMs,
+    },
+    baselineMode: optimization?.baselineMode,
   };
 
   const engineResult = runReasonRouteEngine(engineInput);

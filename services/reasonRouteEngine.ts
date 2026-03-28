@@ -54,6 +54,7 @@ export type EngineInput = {
     weightEmissions: number;
     weightDistance: number;
   };
+  baselineMode?: "dynamic" | "distance";
   optimization?: {
     mode?: "fast" | "quality";
     seed?: number;
@@ -1776,6 +1777,16 @@ export function runReasonRouteEngine(input: EngineInput): EngineResult {
     weightEmissions: input.preferences?.weightEmissions ?? 0.3,
     weightDistance:  input.preferences?.weightDistance  ?? 0.2,
   };
+  const baselineCtx: TrafficContext =
+    input.baselineMode === "distance"
+      ? {
+          heatmap: ctx.heatmap,
+          disruptionZones: ctx.disruptionZones,
+          weightTime: 0,
+          weightEmissions: 0,
+          weightDistance: 1,
+        }
+      : ctx;
 
   const allNodes   = input.nodes;
   const constraints = input.constraints ?? [];
@@ -1789,9 +1800,9 @@ export function runReasonRouteEngine(input: EngineInput): EngineResult {
 
   // Stage 1 — Baseline (nearestNeighbor returns closed, evaluatePath handles it)
   logs.push("[Stage 1] Composite-cost nearest-neighbor baseline + 2-opt refinement.");
-  const rawGreedy    = nearestNeighbor(allNodes, depotId, ctx);   // closed tour
-  const baselinePath = twoOpt(rawGreedy, nodeMap, ctx);           // closed tour
-  const baselineMetrics = evaluatePath(baselinePath, nodeMap, ctx);
+  const rawGreedy    = nearestNeighbor(allNodes, depotId, baselineCtx);   // closed tour
+  const baselinePath = twoOpt(rawGreedy, nodeMap, baselineCtx);           // closed tour
+  const baselineMetrics = evaluatePath(baselinePath, nodeMap, baselineCtx);
   logs.push(
     `[Stage 1] Baseline → ${baselineMetrics.distance.toFixed(2)} km | ` +
     `${baselineMetrics.time.toFixed(1)} min | ` +

@@ -7,7 +7,8 @@ interface SidebarProps {
   onOptimize: (
     stops: string,
     images: File[],
-    preferences?: { weightTime?: number; weightEmissions?: number; weightDistance?: number }
+    preferences?: { weightTime?: number; weightEmissions?: number; weightDistance?: number },
+    optimization?: { mode?: 'fast' | 'quality'; timeBudgetMs?: number; baselineMode?: 'dynamic' | 'distance' }
   ) => void;
   status: ProcessingStatus;
   result: OptimizationResult | null;
@@ -61,6 +62,11 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, status, result, history }
     weightEmissions: 0.3,
     weightDistance: 0.2,
   });
+  const [optimization, setOptimization] = useState<{ mode: 'fast' | 'quality'; timeBudgetMs: number }>({
+    mode: 'fast',
+    timeBudgetMs: 40,
+  });
+  const [baselineMode, setBaselineMode] = useState<'dynamic' | 'distance'>('dynamic');
   const logContainerRef             = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -78,6 +84,14 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, status, result, history }
 
   const handleWeightChange = (key: keyof typeof weights) => (e: React.ChangeEvent<HTMLInputElement>) => {
     setWeights(prev => ({ ...prev, [key]: Number(e.target.value) }));
+  };
+
+  const handleOptimizationChange = (key: 'mode' | 'timeBudgetMs') => (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (key === 'mode') {
+      setOptimization(prev => ({ ...prev, mode: e.target.checked ? 'quality' : 'fast' }));
+    } else {
+      setOptimization(prev => ({ ...prev, timeBudgetMs: Number(e.target.value) }));
+    }
   };
 
   // ── JSON Upload handler ────────────────────────────────────────
@@ -153,6 +167,37 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, status, result, history }
     const a = document.createElement('a');
     a.setAttribute('href', dataStr);
     a.setAttribute('download', 'Driver_Manifest.json');
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  const handleExportGeojson = () => {
+    if (!result) return;
+    const nodeMap = new Map(result.nodes.map(n => [n.id, n]));
+    const toCoords = (path: string[]) =>
+      path
+        .map(id => nodeMap.get(id))
+        .filter(Boolean)
+        .map(n => [n!.x, n!.y]);
+    const feature = (path: string[], label: string) => ({
+      type: 'Feature',
+      properties: { label },
+      geometry: { type: 'LineString', coordinates: toCoords(path) },
+    });
+    const geojson = {
+      type: 'FeatureCollection',
+      features: [
+        feature(result.baselinePath, 'baseline'),
+        feature(result.optimizedPath, 'optimized'),
+      ],
+    };
+    const dataStr =
+      'data:application/json;charset=utf-8,' +
+      encodeURIComponent(JSON.stringify(geojson, null, 2));
+    const a = document.createElement('a');
+    a.setAttribute('href', dataStr);
+    a.setAttribute('download', 'Driver_Route.geojson');
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -266,6 +311,54 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, status, result, history }
             ))}
           </div>
 
+          {/* Quality toggle */}
+          <div className="space-y-2 pt-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                Optimization Mode
+              </label>
+              <span className="text-[10px] text-slate-500 font-mono">{optimization.mode === 'quality' ? 'quality' : 'fast'}</span>
+            </div>
+            <div className="flex items-center gap-2 text-[11px] text-slate-400">
+              <input
+                type="checkbox"
+                checked={optimization.mode === 'quality'}
+                onChange={handleOptimizationChange('mode')}
+                disabled={isProcessing}
+                className="accent-emerald-500"
+                id="quality-toggle"
+              />
+              <label htmlFor="quality-toggle" className="cursor-pointer">Enable quality search (deeper, slower)</label>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="w-24 text-[11px] text-slate-400">Time budget (ms)</span>
+              <input
+                type="range"
+                min={20}
+                max={250}
+                step={10}
+                value={optimization.timeBudgetMs}
+                onChange={handleOptimizationChange('timeBudgetMs')}
+                disabled={isProcessing}
+                className="flex-1 accent-emerald-500"
+              />
+              <span className="w-10 text-right text-[11px] font-mono text-slate-400">
+                {optimization.timeBudgetMs}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 text-[11px] text-slate-400">
+              <input
+                type="checkbox"
+                checked={baselineMode === 'distance'}
+                onChange={(e) => setBaselineMode(e.target.checked ? 'distance' : 'dynamic')}
+                disabled={isProcessing}
+                className="accent-emerald-500"
+                id="baseline-toggle"
+              />
+              <label htmlFor="baseline-toggle" className="cursor-pointer">Fix baseline to distance-only (demo mode)</label>
+            </div>
+          </div>
+
           {/* Image upload / management */}
           <div>
             <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
@@ -343,8 +436,8 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, status, result, history }
 
           {/* Optimize button (unchanged) */}
           <button
-            onClick={() => onOptimize(stops, images, weights)}
-            disabled={isProcessing}
+            onClick={() => onOptimize(stops, images, weights, { ...optimization, baselineMode })}
+            disabled={isProcessing || !stops.trim()}
             className={clsx(
               'w-full py-3 px-4 rounded-md flex items-center justify-center font-bold transition-all',
               isProcessing
@@ -429,8 +522,22 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, status, result, history }
         </div>
       </div>
 
-      {/* Export (unchanged) */}
-      <div className="p-4 border-t border-slate-800 bg-slate-900/50">
+      {/* Recent runs */}
+      <div className="p-4 border-t border-slate-800 bg-slate-900/50 space-y-3">
+        <div className="text-xs font-bold uppercase tracking-wider text-slate-500">Recent Runs</div>
+        <div className="space-y-1 max-h-24 overflow-y-auto">
+          {history.length === 0 && <div className="text-[11px] text-slate-600">No runs yet.</div>}
+          {history.map((h, idx) => (
+            <div key={idx} className="flex items-center justify-between text-[11px] text-slate-400">
+              <span className="truncate mr-2">{new Date(h.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+              <span className="text-emerald-300 font-mono">{h.improvement.timePct > 0 ? `-${h.improvement.timePct}% time` : `${h.improvement.timePct}%`}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Export */}
+      <div className="p-4 border-t border-slate-800 bg-slate-900/50 space-y-2">
         <button
           onClick={handleExport}
           disabled={!result}
@@ -438,6 +545,14 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, status, result, history }
         >
           <Download className="w-4 h-4 mr-2" />
           Export Driver_Manifest.json
+        </button>
+        <button
+          onClick={handleExportGeojson}
+          disabled={!result}
+          className="w-full py-2 px-3 rounded border border-slate-700 hover:bg-slate-800 text-slate-400 hover:text-white transition-colors flex items-center justify-center text-xs font-medium"
+        >
+          <Download className="w-4 h-4 mr-2" />
+          Export Route.geojson
         </button>
       </div>
     </div>

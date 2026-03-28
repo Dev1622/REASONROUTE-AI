@@ -15,7 +15,8 @@ const App: React.FC = () => {
   const handleOptimization = async (
     stopsInput: string,
     images: File[],
-    preferences?: { weightTime?: number; weightEmissions?: number; weightDistance?: number }
+    preferences?: { weightTime?: number; weightEmissions?: number; weightDistance?: number },
+    optimization?: { mode?: 'fast' | 'quality'; timeBudgetMs?: number; baselineMode?: 'dynamic' | 'distance' }
   ) => {
     setStatus(ProcessingStatus.ANALYZING);
     setResult(null); // Reset previous results
@@ -40,7 +41,7 @@ const App: React.FC = () => {
       // Simulate step-by-step UI updates for effect (since API is single call)
       /*setTimeout(() => setStatus(ProcessingStatus.COMPRESSING), 1500);*/
       
-      const apiResult = await optimizeRoute(stopsInput, encodedImages, preferences);
+      const apiResult = await optimizeRoute(stopsInput, encodedImages, preferences, optimization);
       
       setResult(apiResult);
       setStatus(ProcessingStatus.COMPLETE);
