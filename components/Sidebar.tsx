@@ -169,7 +169,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, status, result, history }
     a.setAttribute('download', 'Driver_Manifest.json');
     document.body.appendChild(a);
     a.click();
-    a.remove();
+    document.body.removeChild(a);
   };
 
   const handleExportGeojson = () => {
@@ -178,8 +178,8 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, status, result, history }
     const toCoords = (path: string[]) =>
       path
         .map(id => nodeMap.get(id))
-        .filter(Boolean)
-        .map(n => [n!.x, n!.y]);
+        .filter((n): n is OptimizationResult['nodes'][number] => Boolean(n))
+        .map(n => [n.x, n.y]);
     const feature = (path: string[], label: string) => ({
       type: 'Feature',
       properties: { label },
@@ -200,7 +200,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, status, result, history }
     a.setAttribute('download', 'Driver_Route.geojson');
     document.body.appendChild(a);
     a.click();
-    a.remove();
+    document.body.removeChild(a);
   };
 
   const isProcessing =
@@ -466,7 +466,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, status, result, history }
         <div className="flex flex-col h-64">
           <label className="flex items-center text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
             <Terminal className="w-3 h-3 mr-1" />
-            Gemini Reasoning Log
+            Dispatcher-Friendly Reasoning
           </label>
           <div
             ref={logContainerRef}

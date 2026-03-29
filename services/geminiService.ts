@@ -1,9 +1,3 @@
-// geminiService.ts
-// ReasonRoute AI — Gemini Integration Layer v4.0
-// FIX: heatmap grid built as grid[row=y][col=x] to match getEdgeCost lookup.
-//      Previously it was grid[x][y] (transposed), so disruption zones from
-//      images were written to wrong cells — engine saw traffic in wrong locations.
-
 import { GoogleGenAI } from "@google/genai";
 import { Node } from "./baslineSolver";
 import {
@@ -13,8 +7,6 @@ import {
   CompressionPattern,
 } from "./reasonRouteEngine";
 
-// Resolve API key in both Node (CLI) and Vite/browser builds.
-// Prefer GEMINI_API_KEY; keep API_KEY/VITE_API_KEY as legacy fallbacks.
 const apiKey =
   (typeof process !== "undefined" && process.env
     ? process.env.GEMINI_API_KEY ?? process.env.API_KEY
@@ -24,20 +16,13 @@ const apiKey =
     : undefined);
 
 const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
-// NOTE: If you see fallback logs in the UI, open DevTools and check for
-// "[gemini-error]" entries — they'll surface any auth/CORS/model issues.
 
-// Simple timeout wrapper to avoid indefinite hangs when external calls stall.
 async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: () => T | Promise<T>): Promise<T> {
   return await Promise.race([
     promise,
     new Promise<T>(resolve => setTimeout(() => resolve(fallback()), ms)),
   ]);
 }
-
-// ─────────────────────────────────────────────────────────
-// Public result type (unchanged)
-// ─────────────────────────────────────────────────────────
 
 export type OptimizationResult = {
   nodes: Node[];
@@ -78,10 +63,6 @@ type DisruptionZone = {
   description: string;
 };
 
-// ─────────────────────────────────────────────────────────
-// Step 1: Parse stops text → deterministic Node[] (unchanged)
-// ─────────────────────────────────────────────────────────
-
 function parseStopsToNodes(stopsInput: string): { nodes: Node[]; depotId: string } {
   const lines = stopsInput
     .split("\n")
@@ -93,15 +74,16 @@ function parseStopsToNodes(stopsInput: string): { nodes: Node[]; depotId: string
   const nodes: Node[] = lines.map((line, i) => {
     const parts = line.split(",").map(p => p.trim());
     const label = parts[0];
-    const id    = `node_${i}`;
+    const id = `node_${i}`;
 
-    let x: number, y: number;
+    let x: number;
+    let y: number;
 
     if (parts.length >= 3 && !isNaN(Number(parts[1])) && !isNaN(Number(parts[2]))) {
       x = Math.min(95, Math.max(5, Number(parts[1])));
       y = Math.min(95, Math.max(5, Number(parts[2])));
     } else {
-      const angle  = (i / Math.max(lines.length, 1)) * 2 * Math.PI;
+      const angle = (i / Math.max(lines.length, 1)) * 2 * Math.PI;
       const radius = i === 0 ? 0 : 20 + (i % 4) * 12;
       x = +(50 + radius * Math.cos(angle)).toFixed(1);
       y = +(50 + radius * Math.sin(angle)).toFixed(1);
@@ -113,10 +95,6 @@ function parseStopsToNodes(stopsInput: string): { nodes: Node[]; depotId: string
   return { nodes, depotId: nodes[0].id };
 }
 
-// ─────────────────────────────────────────────────────────
-// Step 2: Visual context extraction (unchanged)
-// ─────────────────────────────────────────────────────────
-
 async function extractDisruptionsFromImage(
   imageBase64: string,
   imageMimeType: string
@@ -125,15 +103,16 @@ async function extractDisruptionsFromImage(
 
   const prompt = `
 Analyze this traffic heatmap or road condition image.
-Identify disruption zones: traffic jams, road closures, floods, construction, accidents.
+Identify disruption zones such as traffic jams, closures, flooding, construction, or accidents.
 
-For each disruption, output a JSON array item with:
-- x: position 0-100 (left to right)
-- y: position 0-100 (top to bottom)
-- radius: zone size 5-30
-- description: what you see in plain English
+Return only a valid JSON array.
+Each item must include:
+- x: position from 0 to 100, left to right
+- y: position from 0 to 100, top to bottom
+- radius: zone size from 5 to 30
+- description: plain-English description of the disruption
 
-Return ONLY a valid JSON array. If nothing found, return [].
+If nothing is found, return [].
 `;
 
   try {
@@ -152,90 +131,99 @@ Return ONLY a valid JSON array. If nothing found, return [].
       () => ({ text: "[]" } as any)
     );
 
-    const text    = response.text ?? "[]";
+    const text = response.text ?? "[]";
     const cleaned = text.replace(/```json|```/g, "").trim();
     return JSON.parse(cleaned) as DisruptionZone[];
-  } catch {
+  } catch (err) {
+    console.warn("[gemini-disruption-error]", err);
     return [];
   }
 }
-
-// ─────────────────────────────────────────────────────────
-// Step 3: Reasoning generation (unchanged)
-// ─────────────────────────────────────────────────────────
 
 async function generateReasoningLog(
   nodes: Node[],
   engineResult: EngineResult,
   disruptions: DisruptionZone[]
 ): Promise<string[]> {
+  const describeDelta = (metric: string, value: number): string => {
+    if (value > 0) return `${metric} improved by ${value}%`;
+    if (value < 0) return `${metric} worsened by ${Math.abs(value)}%`;
+    return `${metric} stayed unchanged`;
+  };
+
   const buildLocalLog = () => {
     const { baseline, optimized, improvement } = engineResult.metrics;
     const lines: string[] = [];
+    const stopCount = Math.max(0, engineResult.baselinePath.length - 1);
+    const patternHighlights = engineResult.detectedPatterns?.slice(0, 2) ?? [];
+
     lines.push(
-      `[00] Context: ${engineResult.baselinePath.length - 1} legs, ` +
-      `${(baseline.distance).toFixed(1)} km base, weights active.`
+      `[00] We compared the normal route against a route tuned to cut time, distance, and emissions across ${stopCount} delivery legs.`
     );
-    lines.push(
-      `[01] Baseline: nearest-neighbor + 2-opt scored ${baseline.composite.toFixed(2)} (dist/time/emiss ${baseline.distance.toFixed(1)} km / ${baseline.time.toFixed(1)} min / ${(baseline.emissions/1000).toFixed(2)} kg).`
-    );
-    if (engineResult.detectedPatterns?.length) {
+
+    if (patternHighlights.length > 0) {
       lines.push(
-        `[02] Patterns: ${engineResult.detectedPatterns.map(p => `${p.type}`).join(", ")} detected; compressed graph explored.`
+        `[01] The route keeps nearby stops together because we detected ${patternHighlights.map(p => p.description.toLowerCase()).join(" and ")}.`
       );
     } else {
-      lines.push(`[02] Patterns: none detected (sparse graph).`);
+      lines.push(
+        `[01] The stop layout is fairly open, so the route mainly avoids unnecessary backtracking and repeat crossings.`
+      );
     }
-    lines.push(
-      `[03] Optimized: composite ${optimized.composite.toFixed(2)} with detours => ${optimized.distance.toFixed(1)} km, ${optimized.time.toFixed(1)} min, ${(optimized.emissions/1000).toFixed(2)} kg.`
-    );
+
     if (disruptions.length > 0) {
-      lines.push(`[04] Image context: ${disruptions.length} disruption zone(s) applied to cost grid.`);
+      lines.push(
+        `[02] We also steered around ${disruptions.length} live incident zone${disruptions.length === 1 ? "" : "s"} identified from the uploaded image.`
+      );
     } else {
-      lines.push(`[04] Image context: none applied.`);
+      lines.push(
+        `[02] No live incident layer was applied, so the route focused on pure operating efficiency.`
+      );
     }
+
     lines.push(
-      `[05] Net improvement: dist ${improvement.distancePct}% | time ${improvement.timePct}% | emissions ${improvement.emissionsPct}%.`
+      `[03] The chosen route finishes at ${optimized.distance.toFixed(1)} km, ${optimized.time.toFixed(1)} min, and ${(optimized.emissions / 1000).toFixed(2)} kg CO2 versus ${baseline.distance.toFixed(1)} km, ${baseline.time.toFixed(1)} min, and ${(baseline.emissions / 1000).toFixed(2)} kg on the baseline.`
     );
+    lines.push(
+      `[04] Overall, ${describeDelta("time", improvement.timePct)}, ${describeDelta("distance", improvement.distancePct)}, and ${describeDelta("emissions", improvement.emissionsPct)}.`
+    );
+
     return lines;
   };
 
   const fallback = () => buildLocalLog();
-
   if (!ai || !apiKey) return fallback();
 
   const labelOf = (id: string) => (nodes.find(n => n.id === id) as any)?.label ?? id;
-
-  const baselinePath  = engineResult.baselinePath.map(labelOf).join(" → ");
-  const optimizedPath = engineResult.optimizedPath.map(labelOf).join(" → ");
+  const baselinePath = engineResult.baselinePath.map(labelOf).join(" -> ");
+  const optimizedPath = engineResult.optimizedPath.map(labelOf).join(" -> ");
   const { baseline, optimized, improvement } = engineResult.metrics;
   const patterns = engineResult.detectedPatterns;
 
   const prompt = `
-You are the ReasonRoute AI reasoning layer.
-The GNOPT math engine has already computed everything. Explain its decisions in plain English.
-Reference ONLY the exact figures below. Do not invent numbers.
+You are writing route explanations for dispatchers and operations managers.
+Explain why the chosen route is better in plain English.
+Do not mention engine stages, graph terms, seeds, candidate tours, or algorithm names.
+If there are no incidents, say the route was chosen because it keeps the run cleaner, faster, or lower-emission than the baseline.
+If there are incidents, say what the chosen route is avoiding and why that matters.
+Use only the facts below. Do not invent numbers, delays, or blockages.
 
-=== REAL ENGINE OUTPUT ===
-Baseline route:  ${baselinePath}
-Optimized route: ${optimizedPath}
+Facts:
+- Baseline route: ${baselinePath}
+- Optimized route: ${optimizedPath}
+- Baseline metrics: ${baseline.distance.toFixed(2)} km, ${baseline.time.toFixed(1)} min, ${(baseline.emissions / 1000).toFixed(3)} kg CO2
+- Optimized metrics: ${optimized.distance.toFixed(2)} km, ${optimized.time.toFixed(1)} min, ${(optimized.emissions / 1000).toFixed(3)} kg CO2
+- Improvement: distance ${improvement.distancePct}%, time ${improvement.timePct}%, emissions ${improvement.emissionsPct}%
+- Patterns detected: ${patterns.length > 0 ? patterns.map(p => p.description).join("; ") : "none"}
+- Incidents from image: ${disruptions.length > 0 ? disruptions.map(d => d.description).join("; ") : "none"}
 
-Baseline:   ${baseline.distance.toFixed(2)} km | ${baseline.time.toFixed(1)} min | ${(baseline.emissions / 1000).toFixed(3)} kg CO₂
-Optimized:  ${optimized.distance.toFixed(2)} km | ${optimized.time.toFixed(1)} min | ${(optimized.emissions / 1000).toFixed(3)} kg CO₂
-Improvement: Distance ${improvement.distancePct > 0 ? "↓" : "↑"}${Math.abs(improvement.distancePct)}% | Time ${improvement.timePct > 0 ? "↓" : "↑"}${Math.abs(improvement.timePct)}% | Emissions ${improvement.emissionsPct > 0 ? "↓" : "↑"}${Math.abs(improvement.emissionsPct)}%
-
-Structural patterns detected:
-${patterns.length > 0 ? patterns.map(p => `  [${p.type}] ${p.description}`).join("\n") : "  None (small/sparse graph)"}
-
-Key engine stages:
-${engineResult.engineLogs.slice(1, 7).map(l => `  ${l}`).join("\n")}
-${disruptions.length > 0 ? `\nVisual disruptions from uploaded image:\n${disruptions.map(d => `  - ${d.description}`).join("\n")}` : ""}
-=== END DATA ===
-
-Write 4–6 reasoning log entries as a JSON array of strings.
-Format each as: "[00] Stage name: explanation."
-Use logistics terminology. Final entry must state the net improvement with exact numbers.
-Output ONLY the JSON array.
+Return a JSON array of exactly 4 strings.
+Each string must start with [00], [01], [02], or [03].
+Each line should sound like a human dispatcher explanation.
+Good tone examples:
+"Detected a dense cluster of downtown stops, so the route keeps them together to avoid extra cross-city travel."
+"This route is chosen because it gets the truck through the busiest area in one pass instead of doubling back later."
+Output only the JSON array.
 `;
 
   try {
@@ -243,25 +231,21 @@ Output ONLY the JSON array.
       ai.models.generateContent({
         model: "gemini-2.5-flash",
         contents: { parts: [{ text: prompt }] },
-        config: { responseMimeType: "application/json", temperature: 0.2 },
+        config: { responseMimeType: "application/json", temperature: 0.35 },
       }),
-      8000,
+      12000,
       () => ({ text: "[]" } as any)
     );
 
-    const text    = response.text ?? "[]";
+    const text = response.text ?? "[]";
     const cleaned = text.replace(/```json|```/g, "").trim();
-    const parsed  = JSON.parse(cleaned);
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed : fallback();
+    const parsed = JSON.parse(cleaned);
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed.map(String) : fallback();
   } catch (err) {
     console.error("[Gemini] reasoning log failed", err);
     return fallback();
   }
 }
-
-// ─────────────────────────────────────────────────────────
-// Main export (unchanged interface)
-// ─────────────────────────────────────────────────────────
 
 type ContextImage = { base64: string; mimeType: string };
 
@@ -273,34 +257,33 @@ export const optimizeRoute = async (
     weightEmissions?: number;
     weightDistance?: number;
   },
-  optimization?: { mode?: 'fast' | 'quality'; timeBudgetMs?: number; baselineMode?: 'dynamic' | 'distance' }
+  optimization?: { mode?: "fast" | "quality"; timeBudgetMs?: number; baselineMode?: "dynamic" | "distance" }
 ): Promise<OptimizationResult> => {
-
   const { nodes, depotId } = parseStopsToNodes(stopsInput);
 
   let disruptions: DisruptionZone[] = [];
   let heatmapForEngine: number[][] | undefined;
 
   if (contextImages.length > 0) {
-    const GRID = 100;
-    const grid: number[][] = Array.from({ length: GRID }, () => new Array(GRID).fill(0));
+    const gridSize = 100;
+    const grid: number[][] = Array.from({ length: gridSize }, () => new Array(gridSize).fill(0));
 
     for (const { base64, mimeType } of contextImages) {
       const zones = await extractDisruptionsFromImage(base64, mimeType);
       disruptions.push(...zones);
 
       for (const zone of zones) {
-        const cx = Math.round(Math.min(GRID - 1, Math.max(0, zone.x)));
-        const cy = Math.round(Math.min(GRID - 1, Math.max(0, zone.y)));
-        const r  = Math.max(1, Math.min(30, zone.radius));
+        const cx = Math.round(Math.min(gridSize - 1, Math.max(0, zone.x)));
+        const cy = Math.round(Math.min(gridSize - 1, Math.max(0, zone.y)));
+        const radius = Math.max(1, Math.min(30, zone.radius));
 
-        for (let dx = -r; dx <= r; dx++) {
-          for (let dy = -r; dy <= r; dy++) {
-            const col = cx + dx;   // x -> column
-            const row = cy + dy;   // y -> row
-            if (row >= 0 && row < GRID && col >= 0 && col < GRID) {
-              const dist     = Math.sqrt(dx * dx + dy * dy);
-              const severity = Math.max(0, 1 - dist / r) * 0.9;
+        for (let dx = -radius; dx <= radius; dx++) {
+          for (let dy = -radius; dy <= radius; dy++) {
+            const col = cx + dx;
+            const row = cy + dy;
+            if (row >= 0 && row < gridSize && col >= 0 && col < gridSize) {
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              const severity = Math.max(0, 1 - dist / radius) * 0.9;
               grid[row][col] = Math.max(grid[row][col], severity);
             }
           }
@@ -312,17 +295,16 @@ export const optimizeRoute = async (
       heatmapForEngine = grid;
     }
   }
-  // If Gemini is unavailable / timed out, still return deterministic baseline/optimized without disruptions.
 
   const engineInput: EngineInput = {
     nodes,
     depotId,
-    trafficHeatmap:  heatmapForEngine,
+    trafficHeatmap: heatmapForEngine,
     disruptionZones: disruptions,
     preferences: {
-      weightTime:      preferences?.weightTime      ?? 0.5,
+      weightTime: preferences?.weightTime ?? 0.5,
       weightEmissions: preferences?.weightEmissions ?? 0.3,
-      weightDistance:  preferences?.weightDistance  ?? 0.2,
+      weightDistance: preferences?.weightDistance ?? 0.2,
     },
     optimization: {
       mode: optimization?.mode,
@@ -333,25 +315,24 @@ export const optimizeRoute = async (
 
   const engineResult = runReasonRouteEngine(engineInput);
   const reasoningLog = await generateReasoningLog(nodes, engineResult, disruptions);
-
   const toKg = (g: number) => +(g / 1000).toFixed(3);
 
   return {
     nodes,
-    baselinePath:    engineResult.baselinePath,
-    optimizedPath:   engineResult.optimizedPath,
+    baselinePath: engineResult.baselinePath,
+    optimizedPath: engineResult.optimizedPath,
     disruptions,
-    logs:            reasoningLog,
-    engineLogs:      engineResult.engineLogs,
+    logs: reasoningLog,
+    engineLogs: engineResult.engineLogs,
     metrics: {
       baseline: {
-        distance:  +engineResult.metrics.baseline.distance.toFixed(2),
-        time:      +engineResult.metrics.baseline.time.toFixed(1),
+        distance: +engineResult.metrics.baseline.distance.toFixed(2),
+        time: +engineResult.metrics.baseline.time.toFixed(1),
         emissions: toKg(engineResult.metrics.baseline.emissions),
       },
       optimized: {
-        distance:  +engineResult.metrics.optimized.distance.toFixed(2),
-        time:      +engineResult.metrics.optimized.time.toFixed(1),
+        distance: +engineResult.metrics.optimized.distance.toFixed(2),
+        time: +engineResult.metrics.optimized.time.toFixed(1),
         emissions: toKg(engineResult.metrics.optimized.emissions),
       },
       improvement: engineResult.metrics.improvement,
