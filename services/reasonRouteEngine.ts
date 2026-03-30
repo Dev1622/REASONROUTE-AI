@@ -1376,6 +1376,56 @@ function improveClosedTourEnsemble(
   return winner.t;
 }
 
+function polishClosedTourSeams(
+  tour: string[],
+  nodes: Node[],
+  depotId: string,
+  nodeMap: Map<string, Node>,
+  ctx: TrafficContext,
+  logs: string[]
+): string[] {
+  let current = sanitizeClosedTour(twoOpt(tour, nodeMap, ctx), nodes, depotId);
+  let currentScore = evaluatePath(current, nodeMap, ctx).composite;
+  let improved = false;
+
+  const tryCandidate = (candidate: string[]): boolean => {
+    const clean = sanitizeClosedTour(candidate, nodes, depotId);
+    const metrics = evaluatePath(clean, nodeMap, ctx);
+    if (metrics.composite + 1e-9 < currentScore) {
+      current = clean;
+      currentScore = metrics.composite;
+      improved = true;
+      return true;
+    }
+    return false;
+  };
+
+  for (let pass = 0; pass < 2; pass++) {
+    let passImproved = false;
+    for (let i = 1; i < current.length - 1; i++) {
+      for (let j = 1; j < current.length - 1; j++) {
+        if (i === j || i + 1 === j) continue;
+        const working = [...current];
+        const [moved] = working.splice(i, 1);
+        const insertAt = j > i ? j - 1 : j;
+        working.splice(insertAt, 0, moved);
+        if (tryCandidate(twoOpt(working, nodeMap, ctx))) {
+          passImproved = true;
+          break;
+        }
+      }
+      if (passImproved) break;
+    }
+    if (!passImproved) break;
+  }
+
+  if (improved) {
+    logs.push(`[Stage 3] Seam polish tightened the final closed tour to score ${currentScore.toFixed(2)}.`);
+  }
+
+  return current;
+}
+
 function recursiveSolve(
   graph: InteractionGraph,
   depotId: string,
@@ -1847,7 +1897,7 @@ export function runReasonRouteEngine(input: EngineInput): EngineResult {
     ? [...deduped, depotId]
     : deduped;
 
-  const finalPath = improveClosedTourEnsemble(
+  const ensemblePath = improveClosedTourEnsemble(
     allNodes,
     depotId,
     ctx,
@@ -1859,6 +1909,14 @@ export function runReasonRouteEngine(input: EngineInput): EngineResult {
     engineSeed,
     engineBudgetMs,
     input.optimization?.alns
+  );
+  const finalPath = polishClosedTourSeams(
+    ensemblePath,
+    allNodes,
+    depotId,
+    nodeMap,
+    ctx,
+    logs
   );
 
   // Evaluate on ORIGINAL nodeMap — same as baseline

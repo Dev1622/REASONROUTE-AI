@@ -6,6 +6,7 @@ import {
   EngineResult,
   CompressionPattern,
 } from "./reasonRouteEngine";
+import { Geofence, RoutedRoad, ValidationSummary } from "../types";
 
 const apiKey =
   (typeof process !== "undefined" && process.env
@@ -28,12 +29,25 @@ export type OptimizationResult = {
   nodes: Node[];
   baselinePath: string[];
   optimizedPath: string[];
+  aiOptimizedPath?: string[];
   disruptions: {
     x: number;
     y: number;
     radius: number;
     description: string;
+    lat?: number;
+    lng?: number;
+    radiusMeters?: number;
   }[];
+  geofences?: Geofence[];
+  baselineRoad?: RoutedRoad | null;
+  optimizedRoad?: RoutedRoad | null;
+  coordinateMode: "geo" | "demo";
+  overrideMode?: "none" | "manual_order";
+  activeRouteLabel?: "optimized" | "manual";
+  manualRouteOrder?: string[];
+  validation?: ValidationSummary;
+  routeWarnings?: string[];
   logs: string[];
   engineLogs: string[];
   metrics: {
@@ -61,15 +75,101 @@ type DisruptionZone = {
   y: number;
   radius: number;
   description: string;
+  lat?: number;
+  lng?: number;
+  radiusMeters?: number;
 };
 
-function parseStopsToNodes(stopsInput: string): { nodes: Node[]; depotId: string } {
-  const lines = stopsInput
+type ParseStopsResult = {
+  nodes: Node[];
+  depotId: string;
+  coordinateMode: "geo" | "demo";
+  validation: ValidationSummary;
+};
+
+function hasHeaderKeywords(line: string): boolean {
+  const normalized = line.toLowerCase();
+  return normalized.includes("lat") || normalized.includes("lng") || normalized.includes("lon") || normalized.includes("longitude");
+}
+
+function looksLikeGeoRows(rows: Array<{ a: number; b: number }>): boolean {
+  if (rows.length === 0) return false;
+  if (rows.some(({ a, b }) => Math.abs(a) > 100 || Math.abs(b) > 100)) return true;
+
+  const allHaveDecimals = rows.every(({ a, b }) => !Number.isInteger(a) || !Number.isInteger(b));
+  if (!allHaveDecimals) return false;
+
+  const lats = rows.map(r => r.a);
+  const lngs = rows.map(r => r.b);
+  const latSpan = Math.max(...lats) - Math.min(...lats);
+  const lngSpan = Math.max(...lngs) - Math.min(...lngs);
+  return latSpan <= 5 && lngSpan <= 5;
+}
+
+function normalizeGeoToDemoSpace(points: Array<{ lat: number; lng: number }>): Array<{ x: number; y: number }> {
+  const minLat = Math.min(...points.map(p => p.lat));
+  const maxLat = Math.max(...points.map(p => p.lat));
+  const minLng = Math.min(...points.map(p => p.lng));
+  const maxLng = Math.max(...points.map(p => p.lng));
+  const latSpan = Math.max(maxLat - minLat, 0.0001);
+  const lngSpan = Math.max(maxLng - minLng, 0.0001);
+
+  return points.map(({ lat, lng }) => ({
+    x: +(5 + ((lng - minLng) / lngSpan) * 90).toFixed(2),
+    y: +(5 + ((lat - minLat) / latSpan) * 90).toFixed(2),
+  }));
+}
+
+function projectDisruptionsToGeo(disruptions: DisruptionZone[], nodes: Node[]): DisruptionZone[] {
+  const geoNodes = nodes.filter(
+    (node): node is Node & { lat: number; lng: number } =>
+      typeof (node as Node & { lat?: number }).lat === "number" &&
+      typeof (node as Node & { lng?: number }).lng === "number"
+  );
+  if (geoNodes.length === 0) return disruptions;
+
+  const minLat = Math.min(...geoNodes.map(node => node.lat));
+  const maxLat = Math.max(...geoNodes.map(node => node.lat));
+  const minLng = Math.min(...geoNodes.map(node => node.lng));
+  const maxLng = Math.max(...geoNodes.map(node => node.lng));
+  const latSpan = Math.max(maxLat - minLat, 0.001);
+  const lngSpan = Math.max(maxLng - minLng, 0.001);
+  const centerLat = (minLat + maxLat) / 2;
+  const metersPerLatDegree = 111_320;
+  const metersPerLngDegree = Math.max(1, 111_320 * Math.cos((centerLat * Math.PI) / 180));
+  const spanMeters = Math.max(latSpan * metersPerLatDegree, lngSpan * metersPerLngDegree);
+
+  return disruptions.map(zone => ({
+    ...zone,
+    lat: +(maxLat - (zone.y / 100) * latSpan).toFixed(6),
+    lng: +(minLng + (zone.x / 100) * lngSpan).toFixed(6),
+    radiusMeters: Math.max(75, Math.round((zone.radius / 100) * spanMeters)),
+  }));
+}
+
+function parseStopsToNodes(stopsInput: string): ParseStopsResult {
+  const rawLines = stopsInput
     .split("\n")
     .map(l => l.trim())
     .filter(Boolean);
 
+  if (rawLines.length === 0) throw new Error("No stops provided.");
+
+  const lines = hasHeaderKeywords(rawLines[0]) ? rawLines.slice(1) : rawLines;
   if (lines.length === 0) throw new Error("No stops provided.");
+
+  const validation: ValidationSummary = { errors: [], warnings: [] };
+  const numericRows = lines
+    .map(line => line.split(",").map(p => p.trim()))
+    .filter(parts => parts.length >= 3 && !isNaN(Number(parts[1])) && !isNaN(Number(parts[2])))
+    .map(parts => ({ a: Number(parts[1]), b: Number(parts[2]) }));
+
+  const coordinateMode: "geo" | "demo" = looksLikeGeoRows(numericRows) ? "geo" : "demo";
+  const normalizedGeoCoords =
+    coordinateMode === "geo"
+      ? normalizeGeoToDemoSpace(numericRows.map(({ a, b }) => ({ lat: a, lng: b })))
+      : [];
+  let geoCoordIndex = 0;
 
   const nodes: Node[] = lines.map((line, i) => {
     const parts = line.split(",").map(p => p.trim());
@@ -80,9 +180,35 @@ function parseStopsToNodes(stopsInput: string): { nodes: Node[]; depotId: string
     let y: number;
 
     if (parts.length >= 3 && !isNaN(Number(parts[1])) && !isNaN(Number(parts[2]))) {
+      if (coordinateMode === "geo") {
+        const lat = Number(parts[1]);
+        const lng = Number(parts[2]);
+        if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+          validation.errors.push(`Invalid lat/lng at row ${i + 1}: "${line}"`);
+        }
+        const normalized = normalizedGeoCoords[geoCoordIndex] ?? { x: 50, y: 50 };
+        geoCoordIndex += 1;
+        x = normalized.x;
+        y = normalized.y;
+        return {
+          id,
+          x,
+          y,
+          lat,
+          lng,
+          type: i === 0 ? "depot" : "stop",
+          label,
+        } as Node & { label: string; lat: number; lng: number };
+      }
+
       x = Math.min(95, Math.max(5, Number(parts[1])));
       y = Math.min(95, Math.max(5, Number(parts[2])));
     } else {
+      if (parts.length > 1 && coordinateMode === "geo") {
+        validation.errors.push(`Missing or invalid lat/lng at row ${i + 1}: "${line}"`);
+      } else if (parts.length > 1) {
+        validation.warnings.push(`Row ${i + 1} did not contain valid coordinates and was auto-placed: "${line}"`);
+      }
       const angle = (i / Math.max(lines.length, 1)) * 2 * Math.PI;
       const radius = i === 0 ? 0 : 20 + (i % 4) * 12;
       x = +(50 + radius * Math.cos(angle)).toFixed(1);
@@ -92,7 +218,11 @@ function parseStopsToNodes(stopsInput: string): { nodes: Node[]; depotId: string
     return { id, x, y, type: i === 0 ? "depot" : "stop", label } as Node & { label: string };
   });
 
-  return { nodes, depotId: nodes[0].id };
+  if (coordinateMode === "geo" && nodes.some(node => typeof (node as any).lat !== "number" || typeof (node as any).lng !== "number")) {
+    validation.errors.push("Every row must provide valid lat/lng values when using geographic mode.");
+  }
+
+  return { nodes, depotId: nodes[0].id, coordinateMode, validation };
 }
 
 async function extractDisruptionsFromImage(
@@ -259,7 +389,10 @@ export const optimizeRoute = async (
   },
   optimization?: { mode?: "fast" | "quality"; timeBudgetMs?: number; baselineMode?: "dynamic" | "distance" }
 ): Promise<OptimizationResult> => {
-  const { nodes, depotId } = parseStopsToNodes(stopsInput);
+  const { nodes, depotId, coordinateMode, validation } = parseStopsToNodes(stopsInput);
+  if (validation.errors.length > 0) {
+    throw new Error(validation.errors.join(" "));
+  }
 
   let disruptions: DisruptionZone[] = [];
   let heatmapForEngine: number[][] | undefined;
@@ -314,14 +447,25 @@ export const optimizeRoute = async (
   };
 
   const engineResult = runReasonRouteEngine(engineInput);
-  const reasoningLog = await generateReasoningLog(nodes, engineResult, disruptions);
+  const projectedDisruptions = coordinateMode === "geo" ? projectDisruptionsToGeo(disruptions, nodes) : disruptions;
+  const reasoningLog = await generateReasoningLog(nodes, engineResult, projectedDisruptions);
   const toKg = (g: number) => +(g / 1000).toFixed(3);
 
   return {
     nodes,
     baselinePath: engineResult.baselinePath,
     optimizedPath: engineResult.optimizedPath,
-    disruptions,
+    aiOptimizedPath: engineResult.optimizedPath,
+    disruptions: projectedDisruptions,
+    geofences: [],
+    baselineRoad: null,
+    optimizedRoad: null,
+    coordinateMode,
+    overrideMode: "none",
+    activeRouteLabel: "optimized",
+    manualRouteOrder: undefined,
+    validation,
+    routeWarnings: [],
     logs: reasoningLog,
     engineLogs: engineResult.engineLogs,
     metrics: {
