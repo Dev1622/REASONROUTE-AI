@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import * as d3 from 'd3';
 import { Circle, CircleMarker, MapContainer, Pane, Polygon, Polyline, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet';
 import type { LatLngBoundsExpression, LatLngExpression } from 'leaflet';
-import { DisplayFilters, Geofence, OptimizationResult, RouteFocus } from '../types';
+import { DisplayFilters, Geofence, LatLngPoint, OptimizationResult, RouteFocus } from '../types';
 
 interface MapVisualizationProps {
   data: OptimizationResult | null;
@@ -24,57 +24,119 @@ interface ClusteredNode {
   nodes: GeoNode[];
 }
 
-function orientation(a: [number, number], b: [number, number], c: [number, number]): number {
-  const value = (b[1] - a[1]) * (c[0] - b[0]) - (b[0] - a[0]) * (c[1] - b[1]);
-  if (Math.abs(value) < 1e-10) return 0;
-  return value > 0 ? 1 : 2;
+function distanceSq(a: [number, number], b: [number, number]): number {
+  const dLat = a[0] - b[0];
+  const dLng = a[1] - b[1];
+  return dLat * dLat + dLng * dLng;
 }
 
-function onSegment(a: [number, number], b: [number, number], c: [number, number]): boolean {
-  return (
-    b[1] <= Math.max(a[1], c[1]) + 1e-10 &&
-    b[1] + 1e-10 >= Math.min(a[1], c[1]) &&
-    b[0] <= Math.max(a[0], c[0]) + 1e-10 &&
-    b[0] + 1e-10 >= Math.min(a[0], c[0])
-  );
+function lerpPoint(a: [number, number], b: [number, number], t: number): [number, number] {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
 }
 
-function segmentsIntersect(a1: [number, number], a2: [number, number], b1: [number, number], b2: [number, number]): boolean {
-  const o1 = orientation(a1, a2, b1);
-  const o2 = orientation(a1, a2, b2);
-  const o3 = orientation(b1, b2, a1);
-  const o4 = orientation(b1, b2, a2);
-
-  if (o1 !== o2 && o3 !== o4) return true;
-  if (o1 === 0 && onSegment(a1, b1, a2)) return true;
-  if (o2 === 0 && onSegment(a1, b2, a2)) return true;
-  if (o3 === 0 && onSegment(b1, a1, b2)) return true;
-  if (o4 === 0 && onSegment(b1, a2, b2)) return true;
-  return false;
-}
-
-function draftWouldSelfIntersect(points: [number, number][]): boolean {
-  if (points.length < 4) return false;
-  const a1 = points[points.length - 2];
-  const a2 = points[points.length - 1];
-  for (let i = 0; i < points.length - 3; i += 1) {
-    const b1 = points[i];
-    const b2 = points[i + 1];
-    if (segmentsIntersect(a1, a2, b1, b2)) return true;
+function projectPointOntoSegment(point: [number, number], start: [number, number], end: [number, number]) {
+  const segLat = end[0] - start[0];
+  const segLng = end[1] - start[1];
+  const segLenSq = segLat * segLat + segLng * segLng;
+  if (segLenSq <= Number.EPSILON) {
+    return { point: start, t: 0, distanceSq: distanceSq(point, start) };
   }
-  return false;
+  const rawT = ((point[0] - start[0]) * segLat + (point[1] - start[1]) * segLng) / segLenSq;
+  const t = Math.max(0, Math.min(1, rawT));
+  const projected = lerpPoint(start, end, t);
+  return { point: projected, t, distanceSq: distanceSq(point, projected) };
 }
 
-function closingWouldSelfIntersect(points: [number, number][]): boolean {
-  if (points.length < 4) return false;
-  const a1 = points[points.length - 1];
-  const a2 = points[0];
-  for (let i = 1; i < points.length - 2; i += 1) {
-    const b1 = points[i];
-    const b2 = points[i + 1];
-    if (segmentsIntersect(a1, a2, b1, b2)) return true;
+function metersToLatDegrees(meters: number): number {
+  return meters / 111320;
+}
+
+function metersToLngDegrees(meters: number, atLat: number): number {
+  const scale = Math.cos((atLat * Math.PI) / 180) * 111320;
+  return meters / Math.max(Math.abs(scale), 1e-6);
+}
+
+function buildBlockedRoadPolygon(path: [number, number][], widthMeters = 18): LatLngPoint[] {
+  if (path.length < 2) {
+    return path.map(([lat, lng]) => ({ lat, lng }));
   }
-  return false;
+
+  const leftOffsets: LatLngPoint[] = [];
+  const rightOffsets: LatLngPoint[] = [];
+
+  for (let i = 0; i < path.length; i += 1) {
+    const current = path[i];
+    const prev = path[Math.max(i - 1, 0)];
+    const next = path[Math.min(i + 1, path.length - 1)];
+    const dirLat = next[0] - prev[0];
+    const dirLng = next[1] - prev[1];
+    const len = Math.hypot(dirLat, dirLng) || 1;
+    const normalLat = -dirLng / len;
+    const normalLng = dirLat / len;
+    const latOffset = metersToLatDegrees(widthMeters) * normalLat;
+    const lngOffset = metersToLngDegrees(widthMeters, current[0]) * normalLng;
+
+    leftOffsets.push({ lat: current[0] + latOffset, lng: current[1] + lngOffset });
+    rightOffsets.push({ lat: current[0] - latOffset, lng: current[1] - lngOffset });
+  }
+
+  return [...leftOffsets, ...rightOffsets.reverse()];
+}
+
+function snapPointToRoad(click: [number, number], roadCoords: [number, number][]) {
+  let best:
+    | {
+        point: [number, number];
+        segmentIndex: number;
+        t: number;
+        distanceSq: number;
+      }
+    | null = null;
+
+  for (let i = 0; i < roadCoords.length - 1; i += 1) {
+    const candidate = projectPointOntoSegment(click, roadCoords[i], roadCoords[i + 1]);
+    if (!best || candidate.distanceSq < best.distanceSq) {
+      best = {
+        point: candidate.point,
+        segmentIndex: i,
+        t: candidate.t,
+        distanceSq: candidate.distanceSq,
+      };
+    }
+  }
+
+  return best;
+}
+
+function roadPositionKey(position: { segmentIndex: number; t: number }) {
+  return position.segmentIndex + position.t;
+}
+
+function sliceRoadBetween(
+  roadCoords: [number, number][],
+  start: { point: [number, number]; segmentIndex: number; t: number },
+  end: { point: [number, number]; segmentIndex: number; t: number }
+): [number, number][] {
+  const startKey = roadPositionKey(start);
+  const endKey = roadPositionKey(end);
+  const from = startKey <= endKey ? start : end;
+  const to = startKey <= endKey ? end : start;
+  const path: [number, number][] = [from.point];
+
+  for (let i = from.segmentIndex + 1; i <= to.segmentIndex; i += 1) {
+    path.push(roadCoords[i]);
+  }
+
+  const last = path[path.length - 1];
+  if (!last || distanceSq(last, to.point) > 1e-12) {
+    path.push(to.point);
+  }
+
+  return path;
+}
+
+function blockedRoadLabel(index: number): string {
+  return `Blocked road ${index.toString().padStart(2, '0')}`;
 }
 
 const DEFAULT_FILTERS: DisplayFilters = {
@@ -182,11 +244,9 @@ function ZoomTracker({ onZoomChange }: { onZoomChange: (zoom: number) => void })
 
 function GeofenceDrawingLayer({
   drawing,
-  draftPoints,
   onAddPoint,
 }: {
   drawing: boolean;
-  draftPoints: LatLngExpression[];
   onAddPoint: (lat: number, lng: number) => void;
 }) {
   useMapEvents({
@@ -196,7 +256,7 @@ function GeofenceDrawingLayer({
     },
   });
 
-  return draftPoints.length >= 2 ? <Polygon positions={draftPoints} pathOptions={{ color: '#f97316', fillOpacity: 0.16, dashArray: '5 4' }} /> : null;
+  return null;
 }
 
 function FiltersPanel({
@@ -388,17 +448,38 @@ function GeoMap({
       ? [nodeMap.get(activeGeoPathIds[focus.selectedLegIndex]), nodeMap.get(activeGeoPathIds[focus.selectedLegIndex + 1])].filter(Boolean) as GeoNode[]
       : [];
   const selectedLegLine = selectedLegNodes.length === 2 ? selectedLegNodes.map(node => [node.lat, node.lng] as [number, number]) : null;
+  const drawableRoad = useMemo(() => {
+    if (data.optimizedRoad?.coordinates?.length && data.optimizedRoad.coordinates.length > 1) return data.optimizedRoad.coordinates;
+    if (baselinePath.length > 1) return baselinePath;
+    return activePath.length > 1 ? activePath : [];
+  }, [activePath, baselinePath, data.optimizedRoad?.coordinates]);
+  const draftSnaps = useMemo(() => draftPoints.map(point => snapPointToRoad(point, drawableRoad)).filter(Boolean), [draftPoints, drawableRoad]);
+  const draftRoadPath = useMemo(() => {
+    if (draftSnaps.length < 2) return draftSnaps[0] ? [draftSnaps[0].point] : [];
+    return sliceRoadBetween(drawableRoad, draftSnaps[0]!, draftSnaps[1]!);
+  }, [draftSnaps, drawableRoad]);
 
   const finishDraft = () => {
-    if (draftPoints.length < 3) return;
-    if (closingWouldSelfIntersect(draftPoints)) {
-      setDraftWarning('This blocked area crosses itself. Draw a simple loop instead.');
+    if (drawableRoad.length < 2) {
+      setDraftWarning('A routed road line is required before you can mark a blocked road segment.');
       return;
     }
+    if (draftPoints.length < 2 || draftSnaps.length < 2 || draftRoadPath.length < 2) {
+      setDraftWarning('Click two points near the routed roadway to mark the blocked stretch.');
+      return;
+    }
+
+    const roadSegment = {
+      start: { lat: draftRoadPath[0][0], lng: draftRoadPath[0][1] },
+      end: { lat: draftRoadPath[draftRoadPath.length - 1][0], lng: draftRoadPath[draftRoadPath.length - 1][1] },
+      path: draftRoadPath.map(([lat, lng]) => ({ lat, lng })),
+    };
     const nextGeofence: Geofence = {
       id: `geofence_${Date.now()}`,
-      label: `Blocked area ${((data.geofences?.length ?? 0) + 1).toString().padStart(2, '0')}`,
-      coordinates: draftPoints.map(([lat, lng]) => ({ lat, lng })),
+      label: blockedRoadLabel((data.geofences?.length ?? 0) + 1),
+      kind: 'road_block',
+      roadSegment,
+      coordinates: buildBlockedRoadPolygon(draftRoadPath),
     };
     onGeofencesChange([...(data.geofences ?? []), nextGeofence]);
     setSelectedGeofenceId(nextGeofence.id);
@@ -426,14 +507,9 @@ function GeoMap({
         <FitMapToData bounds={focus.fitToActiveRoute ? activeBounds ?? bounds : bounds} enabled={Boolean(focus.fitToActiveRoute ? activeBounds ?? bounds : bounds)} />
         <GeofenceDrawingLayer
           drawing={drawing}
-          draftPoints={draftPoints}
           onAddPoint={(lat, lng) =>
             setDraftPoints(prev => {
-              const next = [...prev, [lat, lng] as [number, number]];
-              if (draftWouldSelfIntersect(next)) {
-                setDraftWarning('That point would make the blocked area self-intersect. Try a simple box or loop.');
-                return prev;
-              }
+              const next = prev.length >= 2 ? [[lat, lng] as [number, number]] : [...prev, [lat, lng] as [number, number]];
               setDraftWarning(null);
               return next;
             })
@@ -457,20 +533,43 @@ function GeoMap({
 
         <Pane name="geofences" style={{ zIndex: 500 }}>
           {(data.geofences ?? []).map(geofence => (
-            <Polygon
-              key={geofence.id}
-              positions={geofence.coordinates.map(point => [point.lat, point.lng])}
-              pathOptions={{
-                color: geofence.id === selectedGeofenceId ? '#fb923c' : '#f97316',
-                fillColor: '#f97316',
-                fillOpacity: geofence.id === selectedGeofenceId ? 0.2 : 0.14,
-                weight: geofence.id === selectedGeofenceId ? 3 : 2,
-              }}
-              eventHandlers={{ click: () => setSelectedGeofenceId(geofence.id) }}
-            >
-              <Tooltip>{geofence.label}</Tooltip>
-            </Polygon>
+            <React.Fragment key={geofence.id}>
+              {geofence.coordinates.length >= 3 && (
+                <Polygon
+                  positions={geofence.coordinates.map(point => [point.lat, point.lng])}
+                  pathOptions={{
+                    color: geofence.id === selectedGeofenceId ? '#fb923c' : '#f97316',
+                    fillColor: '#f97316',
+                    fillOpacity: geofence.kind === 'road_block' ? 0.08 : geofence.id === selectedGeofenceId ? 0.2 : 0.14,
+                    weight: geofence.kind === 'road_block' ? 1 : geofence.id === selectedGeofenceId ? 3 : 2,
+                  }}
+                  eventHandlers={{ click: () => setSelectedGeofenceId(geofence.id) }}
+                >
+                  <Tooltip>{geofence.label}</Tooltip>
+                </Polygon>
+              )}
+              {geofence.roadSegment?.path?.length ? (
+                <Polyline
+                  positions={geofence.roadSegment.path.map(point => [point.lat, point.lng] as [number, number])}
+                  pathOptions={{
+                    color: geofence.id === selectedGeofenceId ? '#ef4444' : '#dc2626',
+                    weight: geofence.id === selectedGeofenceId ? 8 : 6,
+                    opacity: 0.92,
+                  }}
+                  eventHandlers={{ click: () => setSelectedGeofenceId(geofence.id) }}
+                >
+                  <Tooltip>{geofence.label}</Tooltip>
+                </Polyline>
+              ) : null}
+            </React.Fragment>
           ))}
+          {drawing && draftRoadPath.length > 0 && (
+            <>
+              <Polyline positions={draftRoadPath} pathOptions={{ color: '#ef4444', weight: 7, opacity: 0.9, dashArray: draftRoadPath.length > 1 ? undefined : '4 4' }} />
+              {draftRoadPath[0] && <CircleMarker center={draftRoadPath[0]} radius={6} pathOptions={{ color: '#7f1d1d', fillColor: '#ef4444', fillOpacity: 1, weight: 2 }} />}
+              {draftRoadPath.length > 1 && <CircleMarker center={draftRoadPath[draftRoadPath.length - 1]} radius={6} pathOptions={{ color: '#7f1d1d', fillColor: '#ef4444', fillOpacity: 1, weight: 2 }} />}
+            </>
+          )}
           {data.disruptions
             .filter(disruption => typeof disruption.lat === 'number' && typeof disruption.lng === 'number' && typeof disruption.radiusMeters === 'number')
             .map((disruption, index) => (
@@ -578,12 +677,15 @@ function GeoMap({
                 setDraftWarning(null);
               }}
             >
-              Draw blocked area
+              Mark blocked road
             </button>
             {drawing && (
               <div className="space-y-1">
+                <div className="rounded border border-slate-800 bg-slate-900/70 px-2 py-2 text-[10px] text-slate-400">
+                  Click near the blocked road start, then click near the blocked road end. We will snap both points onto the routed roadway.
+                </div>
                 <button type="button" className="w-full rounded border border-emerald-500/40 px-2 py-1 text-left text-emerald-300 hover:bg-slate-800" onClick={finishDraft}>
-                  Finish polygon
+                  Apply blocked segment
                 </button>
                 <button type="button" className="w-full rounded border border-slate-700 px-2 py-1 text-left hover:bg-slate-800" onClick={() => { setDrawing(false); setDraftPoints([]); setDraftWarning(null); }}>
                   Cancel drawing
@@ -600,6 +702,11 @@ function GeoMap({
                 <button type="button" className="mb-1 w-full text-left truncate" onClick={() => setSelectedGeofenceId(geofence.id)}>
                   {geofence.label}
                 </button>
+                {geofence.kind === 'road_block' && geofence.roadSegment && (
+                  <div className="mb-2 text-[10px] text-slate-500">
+                    Road block snapped to {geofence.roadSegment.path.length} routed point{geofence.roadSegment.path.length === 1 ? '' : 's'}.
+                  </div>
+                )}
                 {geofence.id === selectedGeofenceId && (
                   <div className="space-y-2">
                     <input

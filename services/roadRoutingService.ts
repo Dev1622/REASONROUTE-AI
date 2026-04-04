@@ -91,6 +91,9 @@ export function validateGeofences(geofences: Geofence[]): string[] {
       warnings.push(`${geofence.label} needs at least 3 points.`);
       continue;
     }
+    if (geofence.kind === 'road_block') {
+      continue;
+    }
     if (polygonArea(geofence.coordinates) < 0.000001) {
       warnings.push(`${geofence.label} is too small to influence routing reliably.`);
     }
@@ -114,7 +117,7 @@ export function validateGeofences(geofences: Geofence[]): string[] {
 
 function geofenceIssues(geofence: Geofence): { selfIntersecting: boolean; tooSmall: boolean } {
   let selfIntersecting = false;
-  if (geofence.coordinates.length >= 4) {
+  if (geofence.kind !== 'road_block' && geofence.coordinates.length >= 4) {
     for (let i = 0; i < geofence.coordinates.length; i += 1) {
       const a1 = geofence.coordinates[i];
       const a2 = geofence.coordinates[(i + 1) % geofence.coordinates.length];
@@ -133,8 +136,80 @@ function geofenceIssues(geofence: Geofence): { selfIntersecting: boolean; tooSma
 
   return {
     selfIntersecting,
-    tooSmall: polygonArea(geofence.coordinates) < 0.000001,
+    tooSmall: geofence.kind === 'road_block' ? false : polygonArea(geofence.coordinates) < 0.000001,
   };
+}
+
+function metersToLatDegrees(meters: number): number {
+  return meters / 111320;
+}
+
+function metersToLngDegrees(meters: number, atLat: number): number {
+  const scale = Math.cos((atLat * Math.PI) / 180) * 111320;
+  return meters / Math.max(Math.abs(scale), 1e-6);
+}
+
+function offsetPoint(point: LatLngPoint, northMeters: number, eastMeters: number): LatLngPoint {
+  return {
+    lat: point.lat + metersToLatDegrees(northMeters),
+    lng: point.lng + metersToLngDegrees(eastMeters, point.lat),
+  };
+}
+
+function pathDirection(path: LatLngPoint[], fromStart: boolean): { lat: number; lng: number } {
+  if (path.length < 2) return { lat: 0, lng: 1 };
+  const anchor = fromStart ? path[0] : path[path.length - 1];
+  const neighbor = fromStart ? path[Math.min(4, path.length - 1)] : path[Math.max(path.length - 5, 0)];
+  const lat = fromStart ? neighbor.lat - anchor.lat : anchor.lat - neighbor.lat;
+  const lng = fromStart ? neighbor.lng - anchor.lng : anchor.lng - neighbor.lng;
+  const length = Math.hypot(lat, lng) || 1;
+  return { lat: lat / length, lng: lng / length };
+}
+
+function roadBlockViaSets(geofence: Geofence): LatLngPoint[][] {
+  if (geofence.kind !== 'road_block' || !geofence.roadSegment?.path?.length) return [];
+
+  const path = geofence.roadSegment.path;
+  const start = path[0];
+  const end = path[path.length - 1];
+  const mid = path[Math.floor(path.length / 2)];
+  const startDir = pathDirection(path, true);
+  const endDir = pathDirection(path, false);
+  const avgDir = { lat: (startDir.lat + endDir.lat) / 2, lng: (startDir.lng + endDir.lng) / 2 };
+  const avgLen = Math.hypot(avgDir.lat, avgDir.lng) || 1;
+  const tangent = { lat: avgDir.lat / avgLen, lng: avgDir.lng / avgLen };
+  const leftNormal = { lat: -tangent.lng, lng: tangent.lat };
+  const rightNormal = { lat: tangent.lng, lng: -tangent.lat };
+
+  const pointAt = (base: LatLngPoint, forwardDir: { lat: number; lng: number }, lateralDir: { lat: number; lng: number }, forwardMeters: number, lateralMeters: number): LatLngPoint => {
+    const northMeters = forwardDir.lat * forwardMeters * 111320 + lateralDir.lat * lateralMeters * 111320;
+    const eastMeters =
+      forwardDir.lng * forwardMeters * Math.cos((base.lat * Math.PI) / 180) * 111320 +
+      lateralDir.lng * lateralMeters * Math.cos((base.lat * Math.PI) / 180) * 111320;
+    return offsetPoint(base, northMeters, eastMeters);
+  };
+
+  const leftNearStart = pointAt(start, { lat: -startDir.lat, lng: -startDir.lng }, leftNormal, 180, 220);
+  const leftFarStart = pointAt(start, { lat: -startDir.lat, lng: -startDir.lng }, leftNormal, 320, 360);
+  const rightNearStart = pointAt(start, { lat: -startDir.lat, lng: -startDir.lng }, rightNormal, 180, 220);
+  const rightFarStart = pointAt(start, { lat: -startDir.lat, lng: -startDir.lng }, rightNormal, 320, 360);
+  const leftNearEnd = pointAt(end, endDir, leftNormal, 180, 220);
+  const leftFarEnd = pointAt(end, endDir, leftNormal, 320, 360);
+  const rightNearEnd = pointAt(end, endDir, rightNormal, 180, 220);
+  const rightFarEnd = pointAt(end, endDir, rightNormal, 320, 360);
+  const leftMid = pointAt(mid, tangent, leftNormal, 0, 320);
+  const rightMid = pointAt(mid, tangent, rightNormal, 0, 320);
+
+  return [
+    [leftNearStart, leftNearEnd],
+    [rightNearStart, rightNearEnd],
+    [leftFarStart, leftFarEnd],
+    [rightFarStart, rightFarEnd],
+    [leftNearStart, leftMid, leftNearEnd],
+    [rightNearStart, rightMid, rightNearEnd],
+    [leftFarStart, leftMid, leftFarEnd],
+    [rightFarStart, rightMid, rightFarEnd],
+  ];
 }
 
 function sanitizeGeofences(geofences: Geofence[]): { geofences: Geofence[]; warnings: string[] } {
@@ -229,6 +304,29 @@ function routeIntersectsAnyGeofence(routeCoords: [number, number][], geofences: 
 }
 
 function getExpandedCandidatePoints(geofence: Geofence): LatLngPoint[] {
+  if (geofence.kind === 'road_block' && geofence.roadSegment?.path?.length) {
+    const path = geofence.roadSegment.path;
+    const start = path[0];
+    const end = path[path.length - 1];
+    const mid = path[Math.floor(path.length / 2)];
+    const deltaLat = end.lat - start.lat;
+    const deltaLng = end.lng - start.lng;
+    const length = Math.hypot(deltaLat, deltaLng) || 1;
+    const normalLat = -deltaLng / length;
+    const normalLng = deltaLat / length;
+    const lateralPad = 0.0025;
+    const forwardPad = 0.0015;
+
+    return [
+      { lat: start.lat - deltaLat * forwardPad + normalLat * lateralPad, lng: start.lng - deltaLng * forwardPad + normalLng * lateralPad },
+      { lat: start.lat - deltaLat * forwardPad - normalLat * lateralPad, lng: start.lng - deltaLng * forwardPad - normalLng * lateralPad },
+      { lat: end.lat + deltaLat * forwardPad + normalLat * lateralPad, lng: end.lng + deltaLng * forwardPad + normalLng * lateralPad },
+      { lat: end.lat + deltaLat * forwardPad - normalLat * lateralPad, lng: end.lng + deltaLng * forwardPad - normalLng * lateralPad },
+      { lat: mid.lat + normalLat * lateralPad * 1.4, lng: mid.lng + normalLng * lateralPad * 1.4 },
+      { lat: mid.lat - normalLat * lateralPad * 1.4, lng: mid.lng - normalLng * lateralPad * 1.4 },
+    ];
+  }
+
   const { minLat, maxLat, minLng, maxLng } = boundingBox(geofence.coordinates);
   const padLat = Math.max(0.002, (maxLat - minLat) * 0.4);
   const padLng = Math.max(0.002, (maxLng - minLng) * 0.4);
@@ -258,6 +356,8 @@ function dedupeCandidatePoints(points: LatLngPoint[]): LatLngPoint[] {
 }
 
 function candidateViaSets(geofences: Geofence[]): LatLngPoint[][] {
+  const structuredRoadBlockSets = geofences.flatMap(roadBlockViaSets);
+
   const candidates = dedupeCandidatePoints(geofences.flatMap(getExpandedCandidatePoints));
   const single = candidates.map(point => [point]);
   const pairs: LatLngPoint[][] = [];
@@ -268,7 +368,7 @@ function candidateViaSets(geofences: Geofence[]): LatLngPoint[][] {
     }
     if (pairs.length >= 18) break;
   }
-  return [...single, ...pairs];
+  return [...structuredRoadBlockSets, ...single, ...pairs];
 }
 
 async function fetchOsrmRoute(points: LatLngPoint[]): Promise<RouteFetchResult> {
@@ -327,18 +427,27 @@ async function routeLegWithAvoidance(start: LatLngPoint, end: LatLngPoint, geofe
 
     const candidates = candidateViaSets(geofences);
     let best: RoutedRoad | null = null;
+    let bestRoadOnly: RoutedRoad | null = {
+      ...direct,
+      source: 'osrm',
+      cacheStatus: direct.cacheHit ? 'hit' : 'miss',
+      fallbackLegCount: 0,
+    };
 
     for (const viaSet of candidates) {
       if (viaSet.some(via => geofences.some(geofence => pointInPolygon(via, geofence.coordinates)))) continue;
       try {
         const routed = await fetchOsrmRoute([start, ...viaSet, end]);
-        if (routeIntersectsAnyGeofence(routed.coordinates, geofences)) continue;
         const candidate: RoutedRoad = {
           ...routed,
           source: 'osrm',
           cacheStatus: routed.cacheHit ? 'hit' : 'miss',
           fallbackLegCount: 0,
         };
+        if (!bestRoadOnly || candidate.distanceKm < bestRoadOnly.distanceKm) {
+          bestRoadOnly = candidate;
+        }
+        if (routeIntersectsAnyGeofence(routed.coordinates, geofences)) continue;
         if (!best || candidate.distanceKm < best.distanceKm) {
           best = candidate;
         }
@@ -353,6 +462,15 @@ async function routeLegWithAvoidance(start: LatLngPoint, end: LatLngPoint, geofe
         cacheStatus: best.cacheStatus ?? 'mixed',
         fallbackLegCount: 0,
         warnings: ['Route was detoured around a blocked geofence.'],
+      };
+    }
+
+    if (bestRoadOnly) {
+      return {
+        ...bestRoadOnly,
+        cacheStatus: bestRoadOnly.cacheStatus ?? 'mixed',
+        fallbackLegCount: 0,
+        warnings: ['No clean detour was found, so the closest road-based reroute was kept.'],
       };
     }
 

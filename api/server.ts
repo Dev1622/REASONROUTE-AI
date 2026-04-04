@@ -196,10 +196,15 @@ async function applyRoadRouting(
   ];
 
   const logs = [...result.logs];
+  const roadBlockCount = geofences.filter(geofence => geofence.kind === 'road_block').length;
   if (manualRouteOrder?.length) {
     logs.unshift('[00] Dispatcher override active: the stop order was manually adjusted and re-routed on real roads.');
   } else if (geofences.length > 0) {
-    logs.unshift(`[00] Route updated with ${geofences.length} dispatcher geofence${geofences.length === 1 ? '' : 's'} and recalculated on real roads.`);
+    logs.unshift(
+      roadBlockCount === geofences.length
+        ? `[00] Route updated with ${roadBlockCount} dispatcher road block${roadBlockCount === 1 ? '' : 's'} and recalculated on real roads.`
+        : `[00] Route updated with ${geofences.length} dispatcher geofence${geofences.length === 1 ? '' : 's'} and recalculated on real roads.`
+    );
   }
 
   const next: OptimizationResult = {

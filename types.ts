@@ -13,10 +13,18 @@ export interface LatLngPoint {
   lng: number;
 }
 
+export interface RoadBlockSegment {
+  start: LatLngPoint;
+  end: LatLngPoint;
+  path: LatLngPoint[];
+}
+
 export interface Geofence {
   id: string;
   label: string;
   coordinates: LatLngPoint[];
+  kind?: 'polygon' | 'road_block';
+  roadSegment?: RoadBlockSegment;
 }
 
 export interface Disruption {
