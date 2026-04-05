@@ -2,8 +2,8 @@ import React, { useEffect, useState } from 'react';
 import Sidebar from './components/Sidebar';
 import MapVisualization from './components/MapVisualization';
 import MetricsDashboard from './components/MetricsDashboard';
-import { optimizeViaApi, rerouteViaApi } from './services/apiClient';
-import { DisplayFilters, Geofence, OptimizationResult, ProcessingStatus, RouteFocus } from './types';
+import { fetchConfigStatus, optimizeViaApi, rerouteViaApi } from './services/apiClient';
+import { AppConfigStatus, DisplayFilters, Geofence, OptimizationResult, ProcessingStatus, RouteFocus } from './types';
 
 const App: React.FC = () => {
   const [status, setStatus] = useState<ProcessingStatus>(ProcessingStatus.IDLE);
@@ -13,6 +13,7 @@ const App: React.FC = () => {
     showBaseline: true,
     showOptimized: true,
     showLabels: true,
+    showTraffic: false,
     upcomingStops: null,
   });
   const [routeFocus, setRouteFocus] = useState<RouteFocus>({
@@ -21,6 +22,11 @@ const App: React.FC = () => {
   const [history, setHistory] = useState<
     { ts: string; improvement: OptimizationResult['metrics']['improvement']; baseline: number; optimized: number }[]
   >([]);
+  const [configStatus, setConfigStatus] = useState<AppConfigStatus | null>(null);
+
+  useEffect(() => {
+    fetchConfigStatus().then(setConfigStatus).catch(() => setConfigStatus(null));
+  }, []);
 
   useEffect(() => {
     setResult(prev => {
@@ -145,6 +151,7 @@ const App: React.FC = () => {
           result={result}
           history={history}
           errorMessage={errorMessage}
+          configStatus={configStatus}
         />
       </div>
 

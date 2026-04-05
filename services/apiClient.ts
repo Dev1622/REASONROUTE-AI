@@ -1,4 +1,4 @@
-import { Geofence, OptimizationResult } from '../types';
+import { AppConfigStatus, Geofence, OptimizationResult } from '../types';
 
 type ImagePayload = { base64: string; mimeType: string };
 
@@ -38,4 +38,13 @@ export async function optimizeViaApi(payload: OptimizePayload): Promise<Optimiza
 export async function rerouteViaApi(payload: ReroutePayload): Promise<OptimizationResult> {
   const response = await postJson<{ result: OptimizationResult }>('/api/reroute', payload);
   return response.result;
+}
+
+export async function fetchConfigStatus(): Promise<AppConfigStatus> {
+  const response = await fetch('/api/config');
+  const json = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error((json as any)?.error ?? `Request failed: ${response.status}`);
+  }
+  return json as AppConfigStatus;
 }

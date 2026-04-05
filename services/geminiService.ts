@@ -1,5 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { Node } from "./baslineSolver";
+import { ensureLocalEnvLoaded } from "./env";
 import {
   runReasonRouteEngine,
   EngineInput,
@@ -8,15 +9,29 @@ import {
 } from "./reasonRouteEngine";
 import { Geofence, RoutedRoad, ValidationSummary } from "../types";
 
-const apiKey =
-  (typeof process !== "undefined" && process.env
-    ? process.env.GEMINI_API_KEY ?? process.env.API_KEY
-    : undefined) ??
-  (typeof import.meta !== "undefined" && (import.meta as any).env
-    ? (import.meta as any).env.VITE_GEMINI_API_KEY ?? (import.meta as any).env.VITE_API_KEY
-    : undefined);
+ensureLocalEnvLoaded();
 
-const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
+function getApiKey() {
+  return (
+    (typeof process !== "undefined" && process.env
+      ? process.env.GEMINI_API_KEY ?? process.env.API_KEY
+      : undefined) ??
+    (typeof import.meta !== "undefined" && (import.meta as any).env
+      ? (import.meta as any).env.VITE_GEMINI_API_KEY ?? (import.meta as any).env.VITE_API_KEY
+      : undefined)
+  );
+}
+
+function getAiClient() {
+  const apiKey = getApiKey();
+  return apiKey ? new GoogleGenAI({ apiKey }) : null;
+}
+
+export function getAiConfigStatus() {
+  return {
+    geminiConfigured: Boolean(getApiKey()),
+  };
+}
 
 async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: () => T | Promise<T>): Promise<T> {
   return await Promise.race([
@@ -229,6 +244,7 @@ async function extractDisruptionsFromImage(
   imageBase64: string,
   imageMimeType: string
 ): Promise<DisruptionZone[]> {
+  const ai = getAiClient();
   if (!ai) return [];
 
   const prompt = `
@@ -322,6 +338,8 @@ async function generateReasoningLog(
   };
 
   const fallback = () => buildLocalLog();
+  const ai = getAiClient();
+  const apiKey = getApiKey();
   if (!ai || !apiKey) return fallback();
 
   const labelOf = (id: string) => (nodes.find(n => n.id === id) as any)?.label ?? id;

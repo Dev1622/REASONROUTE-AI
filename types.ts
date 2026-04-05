@@ -37,11 +37,19 @@ export interface Disruption {
   radiusMeters?: number;
 }
 
+export type TrafficCongestionLevel = 'low' | 'moderate' | 'heavy' | 'severe' | 'unknown';
+
+export interface RouteTrafficSegment {
+  coordinates: [number, number][];
+  congestion: TrafficCongestionLevel;
+}
+
 export interface RoutedRoad {
   coordinates: [number, number][];
   distanceKm: number;
   durationMin: number;
-  source: 'osrm' | 'synthetic';
+  source: 'osrm' | 'mapbox' | 'synthetic';
+  trafficSegments?: RouteTrafficSegment[];
   cacheStatus?: 'hit' | 'miss' | 'mixed' | 'none';
   fallbackLegCount?: number;
   warnings?: string[];
@@ -65,13 +73,26 @@ export interface RouteDiagnostics {
   fallbackLegCount: number;
   cacheStatus: 'hit' | 'miss' | 'mixed' | 'none';
   geofenceImpact: 'none' | 'detoured' | 'blocked_fallback';
+  provider?: 'osrm' | 'mapbox' | 'synthetic' | 'demo';
+  trafficMode?: 'historical_or_live' | 'freeflow';
   warnings: string[];
+}
+
+export interface AppConfigStatus {
+  ready: boolean;
+  routingProvider: 'osrm' | 'mapbox';
+  trafficModeReady: boolean;
+  mapboxConfigured: boolean;
+  geminiConfigured: boolean;
+  historicalReplayReady: boolean;
+  notes: string[];
 }
 
 export interface DisplayFilters {
   showBaseline: boolean;
   showOptimized: boolean;
   showLabels: boolean;
+  showTraffic: boolean;
   upcomingStops: number | null;
 }
 

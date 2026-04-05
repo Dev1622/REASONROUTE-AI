@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Download, FileJson, GripVertical, Play, Terminal, Upload, X } from 'lucide-react';
 import clsx from 'clsx';
-import { OptimizationResult, ProcessingStatus } from '../types';
+import * as XLSX from 'xlsx';
+import { AppConfigStatus, OptimizationResult, ProcessingStatus } from '../types';
 
 interface SidebarProps {
   onOptimize: (
@@ -17,6 +18,7 @@ interface SidebarProps {
   result: OptimizationResult | null;
   history: { ts: string; improvement: { distancePct: number; timePct: number; emissionsPct: number }; baseline: number; optimized: number }[];
   errorMessage?: string | null;
+  configStatus: AppConfigStatus | null;
 }
 
 const SAMPLE_SCENARIOS = [
@@ -61,10 +63,12 @@ const Sidebar: React.FC<SidebarProps> = ({
   result,
   history,
   errorMessage,
+  configStatus,
 }) => {
   const [stops, setStops] = useState(SAMPLE_SCENARIOS[0].value);
   const [images, setImages] = useState<File[]>([]);
   const [jsonFileName, setJsonFileName] = useState<string | null>(null);
+  const [sheetFileName, setSheetFileName] = useState<string | null>(null);
   const [weights, setWeights] = useState({
     weightTime: 0.5,
     weightEmissions: 0.3,
@@ -75,6 +79,8 @@ const Sidebar: React.FC<SidebarProps> = ({
     timeBudgetMs: 40,
   });
   const [baselineMode, setBaselineMode] = useState<'dynamic' | 'distance'>('dynamic');
+  const [showDebugLogs, setShowDebugLogs] = useState(false);
+  const [healthCollapsed, setHealthCollapsed] = useState(false);
   const [manualStops, setManualStops] = useState<string[]>([]);
   const [draggedStopId, setDraggedStopId] = useState<string | null>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
@@ -97,6 +103,95 @@ const Sidebar: React.FC<SidebarProps> = ({
     status !== ProcessingStatus.ERROR;
 
   const nodeMap = useMemo(() => new Map(result?.nodes.map(node => [node.id, node]) ?? []), [result]);
+  const activePath = result?.activeRouteLabel === 'manual' && result.manualRouteOrder?.length ? result.manualRouteOrder : result?.optimizedPath ?? [];
+
+  const buildDriverManifest = () => {
+    if (!result) return null;
+    const stopsInOrder = activePath.map((id, index) => {
+      const node = nodeMap.get(id);
+      return {
+        sequence: index + 1,
+        id,
+        label: node?.label ?? id,
+        type: node?.type ?? 'stop',
+        lat: typeof node?.lat === 'number' ? node.lat : undefined,
+        lng: typeof node?.lng === 'number' ? node.lng : undefined,
+      };
+    });
+
+    return {
+      generatedAt: new Date().toISOString(),
+      routeLabel: result.activeRouteLabel === 'manual' ? 'dispatcher_override' : 'optimized',
+      coordinateMode: result.coordinateMode,
+      routingProvider: result.diagnostics?.provider ?? result.optimizedRoad?.source ?? 'unknown',
+      trafficMode: result.diagnostics?.trafficMode ?? 'freeflow',
+      metrics: result.metrics.optimized,
+      diagnostics: result.diagnostics,
+      warnings: result.routeWarnings ?? [],
+      blockedRoads: (result.geofences ?? [])
+        .filter(geofence => geofence.kind === 'road_block' && geofence.roadSegment)
+        .map(geofence => ({
+          label: geofence.label,
+          start: geofence.roadSegment!.start,
+          end: geofence.roadSegment!.end,
+          pathPointCount: geofence.roadSegment!.path.length,
+        })),
+      stops: stopsInOrder,
+    };
+  };
+
+  const buildDriverManifestHtml = () => {
+    const manifest = buildDriverManifest();
+    if (!manifest) return null;
+    const stopRows = manifest.stops
+      .map(
+        stop => `<tr><td>${stop.sequence}</td><td>${stop.label}</td><td>${stop.type}</td><td>${stop.lat ?? '-'}</td><td>${stop.lng ?? '-'}</td></tr>`
+      )
+      .join('');
+    const warningRows = (manifest.warnings.length ? manifest.warnings : ['No active routing warnings.'])
+      .map(warning => `<li>${warning}</li>`)
+      .join('');
+    const blockRows = (manifest.blockedRoads.length ? manifest.blockedRoads : [])
+      .map(block => `<li>${block.label}: ${block.pathPointCount} routed points blocked</li>`)
+      .join('');
+
+    return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ReasonRoute Driver Manifest</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; color: #0f172a; }
+    h1, h2 { margin-bottom: 8px; }
+    .meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
+    .card { border: 1px solid #cbd5e1; border-radius: 10px; padding: 12px; background: #f8fafc; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { border: 1px solid #cbd5e1; padding: 8px; text-align: left; font-size: 14px; }
+    th { background: #e2e8f0; }
+    ul { margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Driver Manifest</h1>
+  <div>Generated: ${manifest.generatedAt}</div>
+  <div class="meta">
+    <div class="card"><strong>Route</strong><br/>${manifest.routeLabel}</div>
+    <div class="card"><strong>Routing Provider</strong><br/>${manifest.routingProvider}</div>
+    <div class="card"><strong>Traffic Mode</strong><br/>${manifest.trafficMode}</div>
+    <div class="card"><strong>Distance / Time</strong><br/>${manifest.metrics.distance.toFixed(2)} km / ${manifest.metrics.time.toFixed(1)} min</div>
+  </div>
+  <h2>Stop Order</h2>
+  <table>
+    <thead><tr><th>#</th><th>Stop</th><th>Type</th><th>Lat</th><th>Lng</th></tr></thead>
+    <tbody>${stopRows}</tbody>
+  </table>
+  <h2>Warnings</h2>
+  <ul>${warningRows}</ul>
+  ${blockRows ? `<h2>Blocked Roads</h2><ul>${blockRows}</ul>` : ''}
+</body>
+</html>`;
+  };
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
@@ -142,6 +237,69 @@ const Sidebar: React.FC<SidebarProps> = ({
     e.target.value = '';
   };
 
+  const sheetRowsToStops = (rows: unknown[][]) => {
+    const cleanedRows = rows
+      .map(row => (Array.isArray(row) ? row.map(cell => (cell ?? '').toString().trim()) : []))
+      .filter(row => row.some(cell => cell.length > 0));
+    if (cleanedRows.length === 0) {
+      throw new Error('The uploaded sheet did not contain any stop rows.');
+    }
+
+    const maybeHeader = cleanedRows[0].map(cell => cell.toLowerCase());
+    const hasHeader = maybeHeader.some(cell => ['label', 'stop', 'name', 'lat', 'lng', 'lon', 'longitude'].includes(cell));
+    const rowsWithoutHeader = hasHeader ? cleanedRows.slice(1) : cleanedRows;
+    const labelIndex = hasHeader ? maybeHeader.findIndex(cell => ['label', 'stop', 'name'].includes(cell)) : 0;
+    const latIndex = hasHeader ? maybeHeader.findIndex(cell => cell === 'lat' || cell === 'latitude') : 1;
+    const lngIndex = hasHeader ? maybeHeader.findIndex(cell => ['lng', 'lon', 'longitude'].includes(cell)) : 2;
+
+    if (latIndex < 0 || lngIndex < 0) {
+      throw new Error('The sheet needs latitude and longitude columns.');
+    }
+
+    const lines = rowsWithoutHeader
+      .map((row, index) => {
+        const label = row[labelIndex] || `Stop ${index + 1}`;
+        const lat = row[latIndex];
+        const lng = row[lngIndex];
+        return `${label}, ${lat}, ${lng}`;
+      })
+      .filter(line => !/,\s*,\s*$/.test(line));
+
+    if (lines.length === 0) {
+      throw new Error('No valid stop rows were found in the uploaded sheet.');
+    }
+
+    return lines.join('\n');
+  };
+
+  const handleSheetUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setSheetFileName(file.name);
+
+    try {
+      if (file.name.toLowerCase().endsWith('.csv')) {
+        const text = await file.text();
+        const workbook = XLSX.read(text, { type: 'string' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false }) as unknown[][];
+        setStops(sheetRowsToStops(rows));
+      } else {
+        const buffer = await file.arrayBuffer();
+        const workbook = XLSX.read(buffer, { type: 'array' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false }) as unknown[][];
+        setStops(sheetRowsToStops(rows));
+      }
+    } catch (error: any) {
+      console.error(error);
+      setStops('');
+      alert(error?.message ?? 'Spreadsheet import failed.');
+    } finally {
+      e.target.value = '';
+    }
+  };
+
   const reorderManualStop = (sourceId: string, targetId: string) => {
     setManualStops(prev => {
       const sourceIndex = prev.indexOf(sourceId);
@@ -166,11 +324,24 @@ const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const handleExport = () => {
-    if (!result) return;
-    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(result, null, 2));
+    const manifest = buildDriverManifest();
+    if (!manifest) return;
+    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(manifest, null, 2));
     const anchor = document.createElement('a');
     anchor.setAttribute('href', dataStr);
     anchor.setAttribute('download', 'Driver_Manifest.json');
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+  };
+
+  const handleExportDriverPack = () => {
+    const html = buildDriverManifestHtml();
+    if (!html) return;
+    const dataStr = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+    const anchor = document.createElement('a');
+    anchor.setAttribute('href', dataStr);
+    anchor.setAttribute('download', 'Driver_Manifest.html');
     document.body.appendChild(anchor);
     anchor.click();
     document.body.removeChild(anchor);
@@ -235,6 +406,37 @@ const Sidebar: React.FC<SidebarProps> = ({
 
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         <div className="space-y-4">
+          <div className={`rounded-md border px-3 py-3 text-xs ${configStatus?.ready ? 'border-emerald-500/30 bg-emerald-950/15 text-emerald-200' : 'border-amber-500/30 bg-amber-950/20 text-amber-200'}`}>
+            <div className="flex items-center justify-between">
+              <div className="font-bold uppercase tracking-wider">Pilot Health</div>
+              <div className="flex items-center gap-2">
+                <div>{configStatus?.trafficModeReady ? 'Traffic mode ready' : 'OSRM fallback'}</div>
+                <button
+                  type="button"
+                  className="rounded border border-slate-700 px-2 py-1 text-[10px] hover:bg-slate-800"
+                  onClick={() => setHealthCollapsed(prev => !prev)}
+                >
+                  {healthCollapsed ? 'Open' : 'Min'}
+                </button>
+              </div>
+            </div>
+            {healthCollapsed ? null : (
+              <>
+                <div className="mt-2 space-y-1 text-[11px]">
+                  <div className="flex justify-between"><span className="text-slate-400">Routing provider</span><span>{configStatus?.routingProvider ?? 'unknown'}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-400">Mapbox</span><span>{configStatus?.mapboxConfigured ? 'configured' : 'missing'}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-400">Gemini</span><span>{configStatus?.geminiConfigured ? 'configured' : 'missing'}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-400">Historical replay</span><span>{configStatus?.historicalReplayReady ? 'ready' : 'optional'}</span></div>
+                </div>
+                {configStatus?.notes?.length ? (
+                  <div className="mt-2 space-y-1 text-[11px]">
+                    {configStatus.notes.map((note, index) => <div key={index}>{note}</div>)}
+                  </div>
+                ) : null}
+              </>
+            )}
+          </div>
+
           <div>
             <div className="flex items-center justify-between mb-2">
               <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Delivery Stops</label>
@@ -268,6 +470,24 @@ const Sidebar: React.FC<SidebarProps> = ({
                     disabled={isProcessing}
                   />
                 </label>
+                <label
+                  className={clsx(
+                    'flex items-center gap-1.5 text-[10px] font-mono px-2 py-1 rounded border cursor-pointer transition-colors select-none',
+                    isProcessing
+                      ? 'border-slate-800 text-slate-700 cursor-not-allowed'
+                      : 'border-slate-700 text-slate-400 hover:text-emerald-400 hover:border-emerald-500/50'
+                  )}
+                >
+                  <Upload className="w-3 h-3 flex-shrink-0" />
+                  <span>{sheetFileName ? sheetFileName.slice(0, 14) : 'Upload CSV/XLSX'}</span>
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept=".csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
+                    onChange={handleSheetUpload}
+                    disabled={isProcessing}
+                  />
+                </label>
               </div>
             </div>
             <textarea
@@ -277,7 +497,7 @@ const Sidebar: React.FC<SidebarProps> = ({
               disabled={isProcessing}
               placeholder={'One stop per line:\nLabel, lat, lng\nor\nLabel, x, y'}
             />
-            <p className="mt-2 text-[11px] text-slate-500">Road routing is enabled only for valid `lat,lng` rows.</p>
+            <p className="mt-2 text-[11px] text-slate-500">Road routing is enabled only for valid `label, lat, lng` rows. First row should be the depot or warehouse. CSV/XLSX uploads should include label, lat, lng columns.</p>
           </div>
 
           {errorMessage && (
@@ -496,23 +716,34 @@ const Sidebar: React.FC<SidebarProps> = ({
         ) : null}
 
         {result?.diagnostics && (
-          <div className="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px] space-y-1">
-            <div className="text-xs font-bold uppercase tracking-wider text-slate-500">Routing Diagnostics</div>
-            <div className="flex justify-between"><span className="text-slate-500">Routing</span><span>{result.diagnostics.routingStatus}</span></div>
-            <div className="flex justify-between"><span className="text-slate-500">Cache</span><span>{result.diagnostics.cacheStatus}</span></div>
-            <div className="flex justify-between"><span className="text-slate-500">Fallback legs</span><span>{result.diagnostics.fallbackLegCount}</span></div>
-            <div className="flex justify-between"><span className="text-slate-500">Geofence impact</span><span>{result.diagnostics.geofenceImpact}</span></div>
-          </div>
+            <div className="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px] space-y-1">
+              <div className="text-xs font-bold uppercase tracking-wider text-slate-500">Routing Diagnostics</div>
+              <div className="flex justify-between"><span className="text-slate-500">Provider</span><span>{result.diagnostics.provider ?? 'unknown'}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Traffic mode</span><span>{result.diagnostics.trafficMode ?? 'freeflow'}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Routing</span><span>{result.diagnostics.routingStatus}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Cache</span><span>{result.diagnostics.cacheStatus}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Fallback legs</span><span>{result.diagnostics.fallbackLegCount}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Geofence impact</span><span>{result.diagnostics.geofenceImpact}</span></div>
+            </div>
         )}
 
         <div className="flex flex-col h-64">
-          <label className="flex items-center text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
-            <Terminal className="w-3 h-3 mr-1" />
-            Dispatcher-Friendly Reasoning
-          </label>
+          <div className="mb-2 flex items-center justify-between">
+            <label className="flex items-center text-xs font-bold uppercase tracking-wider text-slate-500">
+              <Terminal className="w-3 h-3 mr-1" />
+              {showDebugLogs ? 'Debug Logs' : 'Dispatcher-Friendly Reasoning'}
+            </label>
+            <button
+              type="button"
+              className="text-[10px] font-mono text-slate-500 hover:text-slate-300"
+              onClick={() => setShowDebugLogs(prev => !prev)}
+            >
+              {showDebugLogs ? 'Show dispatcher view' : 'Show debug'}
+            </button>
+          </div>
           <div ref={logContainerRef} className="flex-1 bg-slate-950 rounded-md border border-slate-800 p-3 overflow-y-auto font-mono text-xs space-y-1">
             {status === ProcessingStatus.IDLE && <div className="text-slate-600 italic">Ready to initialize framework...</div>}
-            {result?.logs.map((log, index) => (
+            {(showDebugLogs ? result?.engineLogs : result?.logs)?.map((log, index) => (
               <div key={index} className="flex gap-2">
                 <span className="text-emerald-500/50">[{String(index).padStart(2, '0')}]</span>
                 <span className="text-slate-400">{log}</span>
@@ -539,6 +770,14 @@ const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       <div className="p-4 border-t border-slate-800 bg-slate-900/50 space-y-2">
+        <button
+          onClick={handleExportDriverPack}
+          disabled={!result}
+          className="w-full py-2 px-3 rounded border border-slate-700 hover:bg-slate-800 text-slate-400 hover:text-white transition-colors flex items-center justify-center text-xs font-medium"
+        >
+          <Download className="w-4 h-4 mr-2" />
+          Export Driver_Manifest.html
+        </button>
         <button
           onClick={handleExport}
           disabled={!result}

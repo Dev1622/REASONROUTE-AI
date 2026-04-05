@@ -1,10 +1,13 @@
 import express from 'express';
 import cors from 'cors';
-import { optimizeRoute } from '../services/geminiService';
-import { routePathOnRoads } from '../services/roadRoutingService';
-import { Geofence, Metrics, Node, OptimizationResult } from '../types';
+import { ensureLocalEnvLoaded } from '../services/env';
+import { getAiConfigStatus, optimizeRoute } from '../services/geminiService';
+import { getRoutingConfigStatus, routePathOnRoads } from '../services/roadRoutingService';
+import { AppConfigStatus, Geofence, Metrics, Node, OptimizationResult } from '../types';
 
 type ImagePayload = { base64: string; mimeType: string };
+
+ensureLocalEnvLoaded();
 
 const app = express();
 app.use(cors());
@@ -108,6 +111,16 @@ function buildDiagnostics(result: OptimizationResult): OptimizationResult['diagn
     fallbackLegCount,
     cacheStatus,
     geofenceImpact,
+    provider:
+      result.coordinateMode !== 'geo'
+        ? 'demo'
+        : result.optimizedRoad?.source ?? result.baselineRoad?.source ?? 'synthetic',
+    trafficMode:
+      result.coordinateMode !== 'geo'
+        ? 'freeflow'
+        : result.optimizedRoad?.source === 'mapbox' || result.baselineRoad?.source === 'mapbox'
+          ? 'historical_or_live'
+          : 'freeflow',
     warnings: [...(result.routeWarnings ?? [])],
   };
 }
@@ -235,6 +248,38 @@ async function applyRoadRouting(
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() });
+});
+
+app.get(['/config', '/api/config'], (_req, res) => {
+  const routing = getRoutingConfigStatus();
+  const ai = getAiConfigStatus();
+  const notes: string[] = [];
+
+  if (routing.routingProvider === 'mapbox' && routing.trafficModeReady) {
+    notes.push('Traffic mode ready: Mapbox traffic routing is configured.');
+  } else {
+    notes.push('OSRM fallback active: traffic-aware routing is not fully configured yet.');
+  }
+  if (!ai.geminiConfigured) {
+    notes.push('Gemini API key is missing, so AI-generated reasoning and image disruption extraction are disabled.');
+  }
+  if (routing.routingProvider === 'mapbox' && routing.departAtConfigured && !routing.departAtValid) {
+    notes.push('MAPBOX_DEPART_AT is set but invalid or in the past, so live traffic routing is being used instead.');
+  } else if (routing.routingProvider === 'mapbox' && !routing.historicalReplayReady) {
+    notes.push('Historical replay is optional. Set MAPBOX_DEPART_AT to test a future dispatch window.');
+  }
+
+  const payload: AppConfigStatus = {
+    ready: routing.trafficModeReady && ai.geminiConfigured,
+    routingProvider: routing.routingProvider,
+    trafficModeReady: routing.trafficModeReady,
+    mapboxConfigured: routing.mapboxConfigured,
+    geminiConfigured: ai.geminiConfigured,
+    historicalReplayReady: routing.historicalReplayReady,
+    notes,
+  };
+
+  res.json(payload);
 });
 
 app.post(['/optimize', '/api/optimize'], async (req, res) => {

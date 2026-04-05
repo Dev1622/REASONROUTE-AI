@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import * as d3 from 'd3';
 import { Circle, CircleMarker, MapContainer, Pane, Polygon, Polyline, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet';
 import type { LatLngBoundsExpression, LatLngExpression } from 'leaflet';
-import { DisplayFilters, Geofence, LatLngPoint, OptimizationResult, RouteFocus } from '../types';
+import { DisplayFilters, Geofence, LatLngPoint, OptimizationResult, RouteFocus, RouteTrafficSegment, TrafficCongestionLevel } from '../types';
 
 interface MapVisualizationProps {
   data: OptimizationResult | null;
@@ -22,6 +22,11 @@ interface ClusteredNode {
   lng: number;
   count: number;
   nodes: GeoNode[];
+}
+
+interface TrafficDisplayLine {
+  coordinates: [number, number][];
+  congestion: TrafficCongestionLevel;
 }
 
 function distanceSq(a: [number, number], b: [number, number]): number {
@@ -139,10 +144,54 @@ function blockedRoadLabel(index: number): string {
   return `Blocked road ${index.toString().padStart(2, '0')}`;
 }
 
+function sameCoord(a?: [number, number], b?: [number, number]) {
+  return Boolean(a && b && Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9);
+}
+
+function buildTrafficDisplayLines(segments: RouteTrafficSegment[]): TrafficDisplayLine[] {
+  const lines: TrafficDisplayLine[] = [];
+
+  for (const segment of segments) {
+    if (segment.coordinates.length < 2) continue;
+    const previous = lines[lines.length - 1];
+    const start = segment.coordinates[0];
+    const end = segment.coordinates[segment.coordinates.length - 1];
+    if (!start || !end) continue;
+
+    if (previous && previous.congestion === segment.congestion && sameCoord(previous.coordinates[previous.coordinates.length - 1], start)) {
+      previous.coordinates.push(...segment.coordinates.slice(1));
+      continue;
+    }
+
+    lines.push({
+      coordinates: [...segment.coordinates],
+      congestion: segment.congestion,
+    });
+  }
+
+  return lines;
+}
+
+function trafficColor(congestion: TrafficCongestionLevel) {
+  switch (congestion) {
+    case 'low':
+      return '#22c55e';
+    case 'moderate':
+      return '#facc15';
+    case 'heavy':
+      return '#f97316';
+    case 'severe':
+      return '#ef4444';
+    default:
+      return '#94a3b8';
+  }
+}
+
 const DEFAULT_FILTERS: DisplayFilters = {
   showBaseline: true,
   showOptimized: true,
   showLabels: true,
+  showTraffic: false,
   upcomingStops: null,
 };
 
@@ -263,12 +312,14 @@ function FiltersPanel({
   filters,
   onFiltersChange,
   stopCount,
+  trafficAvailable,
   collapsed,
   onToggleCollapsed,
 }: {
   filters: DisplayFilters;
   onFiltersChange: React.Dispatch<React.SetStateAction<DisplayFilters>>;
   stopCount: number;
+  trafficAvailable: boolean;
   collapsed: boolean;
   onToggleCollapsed: () => void;
 }) {
@@ -292,10 +343,30 @@ function FiltersPanel({
         <button type="button" className={`rounded border px-2 py-1 ${filters.showLabels ? 'border-blue-500/50 text-blue-300' : 'border-slate-800 text-slate-500'}`} onClick={() => onFiltersChange(prev => ({ ...prev, showLabels: !prev.showLabels }))}>
           Labels
         </button>
+        <button
+          type="button"
+          className={`rounded border px-2 py-1 ${
+            filters.showTraffic
+              ? 'border-red-500/50 text-red-300'
+              : trafficAvailable
+                ? 'border-slate-700 text-slate-300'
+                : 'border-slate-800 text-slate-600'
+          }`}
+          onClick={() => onFiltersChange(prev => ({ ...prev, showTraffic: !prev.showTraffic }))}
+        >
+          Traffic
+        </button>
         <button type="button" className="rounded border border-slate-700 px-2 py-1 text-slate-300" onClick={() => onFiltersChange(DEFAULT_FILTERS)}>
           Reset
         </button>
       </div>
+      {filters.showTraffic ? (
+        <div className="rounded border border-slate-800 bg-slate-900/70 px-2 py-2 text-[10px] text-slate-400">
+          {trafficAvailable
+            ? 'Traffic overlay colors the active Mapbox route by congestion.'
+            : 'Traffic overlay appears only when the active route came from Mapbox traffic routing.'}
+        </div>
+      ) : null}
       <div className="space-y-1">
         <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-slate-500">
           <span>Upcoming stops</span>
@@ -437,6 +508,22 @@ function GeoMap({
     const node = nodeMap.get(id);
     return typeof node?.lat === 'number' && typeof node?.lng === 'number';
   });
+  const trafficLines = useMemo(
+    () =>
+      filters.showTraffic && !filters.upcomingStops && data.optimizedRoad?.source === 'mapbox'
+        ? buildTrafficDisplayLines(data.optimizedRoad.trafficSegments ?? [])
+        : [],
+    [data.optimizedRoad, filters.showTraffic, filters.upcomingStops]
+  );
+  const trafficOverlayActive = trafficLines.length > 0;
+  const trafficAvailable = data.optimizedRoad?.source === 'mapbox' && (data.optimizedRoad.trafficSegments?.length ?? 0) > 0;
+  const trafficOverlayStatus = trafficOverlayActive
+    ? 'traffic overlay on'
+    : filters.showTraffic
+      ? filters.upcomingStops
+        ? 'traffic overlay hidden by stop filter'
+        : 'traffic overlay waiting for Mapbox data'
+      : '';
 
   const activeBounds = useMemo(() => computeBounds(activePath), [activePath]);
   const allPoints = useMemo(() => [...baselinePath, ...activePath, ...geoNodes.map(node => [node.lat, node.lng] as [number, number])], [baselinePath, activePath, geoNodes]);
@@ -523,9 +610,16 @@ function GeoMap({
         </Pane>
 
         <Pane name="optimized" style={{ zIndex: 450 }}>
-          {filters.showOptimized && activePath.length > 1 && (
+          {filters.showOptimized && activePath.length > 1 && !trafficOverlayActive && (
             <Polyline pathOptions={{ color: '#10b981', weight: 5, opacity: 0.95 }} positions={activePath} />
           )}
+          {filters.showOptimized && trafficOverlayActive && trafficLines.map((line, index) => (
+            <Polyline
+              key={`${line.congestion}-${index}`}
+              pathOptions={{ color: trafficColor(line.congestion), weight: 6, opacity: 0.95 }}
+              positions={line.coordinates}
+            />
+          ))}
           {selectedLegLine && (
             <Polyline pathOptions={{ color: '#f59e0b', weight: 7, opacity: 0.9 }} positions={selectedLegLine} />
           )}
@@ -641,6 +735,7 @@ function GeoMap({
         filters={filters}
         onFiltersChange={onFiltersChange}
         stopCount={Math.max(geoNodes.length - 1, 1)}
+        trafficAvailable={trafficAvailable}
         collapsed={controlsCollapsed}
         onToggleCollapsed={() => setControlsCollapsed(prev => !prev)}
       />
@@ -654,10 +749,21 @@ function GeoMap({
       />
 
       <div className="absolute left-4 bottom-4 z-[900] rounded-lg border border-slate-700/80 bg-slate-950/85 px-3 py-2 text-[11px] font-mono text-slate-300 shadow-xl backdrop-blur">
-        {data.optimizedRoad?.source === 'osrm'
-          ? `Road-snapped mode: OSRM active | cache ${data.optimizedRoad.cacheStatus ?? 'none'} | fallback legs ${data.optimizedRoad.fallbackLegCount ?? 0}`
+        {data.optimizedRoad?.source === 'osrm' || data.optimizedRoad?.source === 'mapbox'
+          ? `Road-snapped mode: ${data.optimizedRoad.source === 'mapbox' ? 'Mapbox traffic' : 'OSRM'} active${trafficOverlayStatus ? ` | ${trafficOverlayStatus}` : ''} | cache ${data.optimizedRoad.cacheStatus ?? 'none'} | fallback legs ${data.optimizedRoad.fallbackLegCount ?? 0}`
           : 'Road mode active with fallback warnings'}
       </div>
+
+      {trafficOverlayActive && (
+        <div className="absolute left-4 bottom-20 z-[900] rounded-lg border border-slate-700/80 bg-slate-950/85 px-3 py-2 text-[10px] font-mono text-slate-300 shadow-xl backdrop-blur">
+          <div className="mb-1 uppercase tracking-wider text-slate-500">Traffic Overlay</div>
+          <div className="flex items-center gap-2"><span className="inline-block h-0.5 w-4 bg-green-500" />Low</div>
+          <div className="flex items-center gap-2"><span className="inline-block h-0.5 w-4 bg-yellow-400" />Moderate</div>
+          <div className="flex items-center gap-2"><span className="inline-block h-0.5 w-4 bg-orange-500" />Heavy</div>
+          <div className="flex items-center gap-2"><span className="inline-block h-0.5 w-4 bg-red-500" />Severe</div>
+          <div className="flex items-center gap-2"><span className="inline-block h-0.5 w-4 bg-slate-400" />Unknown</div>
+        </div>
+      )}
 
       <div className="absolute bottom-4 right-4 z-[900] w-72 rounded-lg border border-slate-700/80 bg-slate-950/85 px-3 py-3 text-[11px] font-mono text-slate-300 shadow-xl backdrop-blur space-y-2">
         <div className="flex items-center justify-between">

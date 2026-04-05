@@ -1,15 +1,175 @@
-import { Geofence, LatLngPoint, Node, RoutedRoad } from '../types';
+import { ensureLocalEnvLoaded } from './env';
+import { Geofence, LatLngPoint, Node, RouteTrafficSegment, RoutedRoad, TrafficCongestionLevel } from '../types';
+
+ensureLocalEnvLoaded();
 
 type RouteFetchResult = {
   coordinates: [number, number][];
   distanceKm: number;
   durationMin: number;
   cacheHit: boolean;
+  source: 'osrm' | 'mapbox';
+  trafficSegments?: RouteTrafficSegment[];
 };
 
-const OSRM_BASE_URL = (typeof process !== 'undefined' && process.env?.OSRM_BASE_URL) || 'https://router.project-osrm.org';
 const routeCache = new Map<string, Omit<RouteFetchResult, 'cacheHit'>>();
 const inflightCache = new Map<string, Promise<Omit<RouteFetchResult, 'cacheHit'>>>();
+const runtimeWarnings = new Set<string>();
+const fallbackWarningCounts = new Map<string, number>();
+
+type DepartAtStatus = {
+  raw: string;
+  effective: string;
+  isConfigured: boolean;
+  isValid: boolean;
+  isPast: boolean;
+  warning?: string;
+};
+
+function warnOnce(key: string, message: string) {
+  if (runtimeWarnings.has(key)) return;
+  runtimeWarnings.add(key);
+  console.warn(message);
+}
+
+function normalizeMapboxDepartAt(rawValue: string): DepartAtStatus {
+  const raw = rawValue.trim();
+  if (!raw) {
+    return {
+      raw,
+      effective: '',
+      isConfigured: false,
+      isValid: false,
+      isPast: false,
+    };
+  }
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) {
+    return {
+      raw,
+      effective: '',
+      isConfigured: true,
+      isValid: false,
+      isPast: false,
+      warning: `[routing] Ignoring MAPBOX_DEPART_AT because it is not a valid ISO timestamp: ${raw}`,
+    };
+  }
+
+  if (parsed.getTime() < Date.now()) {
+    return {
+      raw,
+      effective: '',
+      isConfigured: true,
+      isValid: true,
+      isPast: true,
+      warning: `[routing] Ignoring MAPBOX_DEPART_AT because it is in the past: ${raw}`,
+    };
+  }
+
+  return {
+    raw,
+    effective: raw,
+    isConfigured: true,
+    isValid: true,
+    isPast: false,
+  };
+}
+
+function logMapboxFallback(error: unknown) {
+  const detail = error instanceof Error ? error.message : String(error);
+  const count = (fallbackWarningCounts.get(detail) ?? 0) + 1;
+  fallbackWarningCounts.set(detail, count);
+
+  if (count === 1) {
+    console.warn('[routing] Mapbox request failed, falling back to OSRM road routing.', error);
+    return;
+  }
+
+  if (count === 5 || count === 20 || count % 50 === 0) {
+    console.warn(`[routing] Mapbox fallback repeated ${count} times. Latest reason: ${detail}`);
+  }
+}
+
+function normalizeTrafficCongestionLevel(value: unknown): TrafficCongestionLevel {
+  return value === 'low' || value === 'moderate' || value === 'heavy' || value === 'severe' ? value : 'unknown';
+}
+
+function buildTrafficSegmentsFromMapboxRoute(route: any): RouteTrafficSegment[] | undefined {
+  const geometry = route?.geometry?.coordinates;
+  const legs = Array.isArray(route?.legs) ? route.legs : [];
+  if (!Array.isArray(geometry) || geometry.length < 2 || legs.length === 0) {
+    return undefined;
+  }
+
+  const routeCoords = geometry.map(([lng, lat]: [number, number]) => [lat, lng] as [number, number]);
+  const segments: RouteTrafficSegment[] = [];
+  let cursor = 0;
+
+  for (const leg of legs) {
+    const congestionValues = Array.isArray(leg?.annotation?.congestion) ? leg.annotation.congestion : [];
+    const distanceValues = Array.isArray(leg?.annotation?.distance) ? leg.annotation.distance : [];
+    const segmentCount = Math.max(congestionValues.length, distanceValues.length);
+    if (segmentCount <= 0) continue;
+
+    for (let index = 0; index < segmentCount; index += 1) {
+      const start = routeCoords[cursor + index];
+      const end = routeCoords[cursor + index + 1];
+      if (!start || !end) break;
+      segments.push({
+        coordinates: [start, end],
+        congestion: normalizeTrafficCongestionLevel(congestionValues[index]),
+      });
+    }
+
+    cursor += segmentCount;
+  }
+
+  return segments.length > 0 ? segments : undefined;
+}
+
+function getRoutingEnv() {
+  const osrmBaseUrl = (typeof process !== 'undefined' && process.env?.OSRM_BASE_URL) || 'https://router.project-osrm.org';
+  const mapboxBaseUrl = (typeof process !== 'undefined' && process.env?.MAPBOX_DIRECTIONS_BASE_URL) || 'https://api.mapbox.com/directions/v5';
+  const mapboxAccessToken = (typeof process !== 'undefined' && process.env?.MAPBOX_ACCESS_TOKEN) || '';
+  const mapboxProfile = (typeof process !== 'undefined' && process.env?.MAPBOX_DIRECTIONS_PROFILE) || 'mapbox/driving-traffic';
+  const mapboxDepartAtRaw = (typeof process !== 'undefined' && process.env?.MAPBOX_DEPART_AT) || '';
+  const mapboxDepartAtStatus = normalizeMapboxDepartAt(mapboxDepartAtRaw);
+  const routingProvider = ((typeof process !== 'undefined' && process.env?.ROUTING_PROVIDER) || '').trim().toLowerCase();
+  const activeRoutingProvider: 'osrm' | 'mapbox' =
+    routingProvider === 'osrm'
+      ? 'osrm'
+      : routingProvider === 'mapbox'
+        ? (mapboxAccessToken ? 'mapbox' : 'osrm')
+        : (mapboxAccessToken ? 'mapbox' : 'osrm');
+
+  if (mapboxDepartAtStatus.warning) {
+    warnOnce(`mapbox-depart-at:${mapboxDepartAtStatus.raw}`, mapboxDepartAtStatus.warning);
+  }
+
+  return {
+    osrmBaseUrl,
+    mapboxBaseUrl,
+    mapboxAccessToken,
+    mapboxProfile,
+    mapboxDepartAt: mapboxDepartAtStatus.effective,
+    mapboxDepartAtConfigured: mapboxDepartAtStatus.isConfigured,
+    mapboxDepartAtValid: mapboxDepartAtStatus.isValid && !mapboxDepartAtStatus.isPast,
+    activeRoutingProvider,
+  };
+}
+
+export function getRoutingConfigStatus() {
+  const env = getRoutingEnv();
+  return {
+    routingProvider: env.activeRoutingProvider,
+    mapboxConfigured: Boolean(env.mapboxAccessToken),
+    trafficModeReady: env.activeRoutingProvider === 'mapbox' && Boolean(env.mapboxAccessToken),
+    historicalReplayReady: env.activeRoutingProvider === 'mapbox' && Boolean(env.mapboxDepartAt),
+    departAtConfigured: env.mapboxDepartAtConfigured,
+    departAtValid: env.mapboxDepartAtValid,
+  };
+}
 
 function haversineKm(a: LatLngPoint, b: LatLngPoint): number {
   const toRad = (deg: number) => (deg * Math.PI) / 180;
@@ -37,6 +197,7 @@ function syntheticRoad(points: LatLngPoint[], warning?: string): RoutedRoad {
     distanceKm: +distanceKm.toFixed(2),
     durationMin: +durationMin.toFixed(1),
     source: 'synthetic',
+    trafficSegments: undefined,
     cacheStatus: 'none',
     fallbackLegCount: Math.max(0, points.length - 1),
     warnings: warning ? [warning] : undefined,
@@ -45,6 +206,20 @@ function syntheticRoad(points: LatLngPoint[], warning?: string): RoutedRoad {
 
 function fingerprintPoints(points: LatLngPoint[]): string {
   return points.map(point => `${point.lat.toFixed(6)},${point.lng.toFixed(6)}`).join('|');
+}
+
+function sampleRoadBlockExcludePoints(geofences: Geofence[]): LatLngPoint[] {
+  const samples: LatLngPoint[] = [];
+  for (const geofence of geofences) {
+    if (geofence.kind !== 'road_block' || !geofence.roadSegment?.path?.length) continue;
+    const path = geofence.roadSegment.path;
+    const sampleCount = Math.min(12, path.length);
+    for (let i = 0; i < sampleCount; i += 1) {
+      const index = Math.round((i * (path.length - 1)) / Math.max(sampleCount - 1, 1));
+      samples.push(path[index]);
+    }
+  }
+  return dedupeCandidatePoints(samples).slice(0, 50);
 }
 
 function geofenceFingerprint(geofences: Geofence[]): string {
@@ -156,14 +331,17 @@ function offsetPoint(point: LatLngPoint, northMeters: number, eastMeters: number
   };
 }
 
-function pathDirection(path: LatLngPoint[], fromStart: boolean): { lat: number; lng: number } {
-  if (path.length < 2) return { lat: 0, lng: 1 };
+function pathDirection(path: LatLngPoint[], fromStart: boolean): { north: number; east: number } {
+  if (path.length < 2) return { north: 0, east: 1 };
   const anchor = fromStart ? path[0] : path[path.length - 1];
   const neighbor = fromStart ? path[Math.min(4, path.length - 1)] : path[Math.max(path.length - 5, 0)];
   const lat = fromStart ? neighbor.lat - anchor.lat : anchor.lat - neighbor.lat;
   const lng = fromStart ? neighbor.lng - anchor.lng : anchor.lng - neighbor.lng;
-  const length = Math.hypot(lat, lng) || 1;
-  return { lat: lat / length, lng: lng / length };
+  const avgLat = (anchor.lat + neighbor.lat) / 2;
+  const north = lat * 111320;
+  const east = lng * Math.cos((avgLat * Math.PI) / 180) * 111320;
+  const length = Math.hypot(north, east) || 1;
+  return { north: north / length, east: east / length };
 }
 
 function roadBlockViaSets(geofence: Geofence): LatLngPoint[][] {
@@ -175,24 +353,28 @@ function roadBlockViaSets(geofence: Geofence): LatLngPoint[][] {
   const mid = path[Math.floor(path.length / 2)];
   const startDir = pathDirection(path, true);
   const endDir = pathDirection(path, false);
-  const avgDir = { lat: (startDir.lat + endDir.lat) / 2, lng: (startDir.lng + endDir.lng) / 2 };
-  const avgLen = Math.hypot(avgDir.lat, avgDir.lng) || 1;
-  const tangent = { lat: avgDir.lat / avgLen, lng: avgDir.lng / avgLen };
-  const leftNormal = { lat: -tangent.lng, lng: tangent.lat };
-  const rightNormal = { lat: tangent.lng, lng: -tangent.lat };
+  const avgDir = { north: (startDir.north + endDir.north) / 2, east: (startDir.east + endDir.east) / 2 };
+  const avgLen = Math.hypot(avgDir.north, avgDir.east) || 1;
+  const tangent = { north: avgDir.north / avgLen, east: avgDir.east / avgLen };
+  const leftNormal = { north: -tangent.east, east: tangent.north };
+  const rightNormal = { north: tangent.east, east: -tangent.north };
 
-  const pointAt = (base: LatLngPoint, forwardDir: { lat: number; lng: number }, lateralDir: { lat: number; lng: number }, forwardMeters: number, lateralMeters: number): LatLngPoint => {
-    const northMeters = forwardDir.lat * forwardMeters * 111320 + lateralDir.lat * lateralMeters * 111320;
-    const eastMeters =
-      forwardDir.lng * forwardMeters * Math.cos((base.lat * Math.PI) / 180) * 111320 +
-      lateralDir.lng * lateralMeters * Math.cos((base.lat * Math.PI) / 180) * 111320;
+  const pointAt = (
+    base: LatLngPoint,
+    forwardDir: { north: number; east: number },
+    lateralDir: { north: number; east: number },
+    forwardMeters: number,
+    lateralMeters: number
+  ): LatLngPoint => {
+    const northMeters = forwardDir.north * forwardMeters + lateralDir.north * lateralMeters;
+    const eastMeters = forwardDir.east * forwardMeters + lateralDir.east * lateralMeters;
     return offsetPoint(base, northMeters, eastMeters);
   };
 
-  const leftNearStart = pointAt(start, { lat: -startDir.lat, lng: -startDir.lng }, leftNormal, 180, 220);
-  const leftFarStart = pointAt(start, { lat: -startDir.lat, lng: -startDir.lng }, leftNormal, 320, 360);
-  const rightNearStart = pointAt(start, { lat: -startDir.lat, lng: -startDir.lng }, rightNormal, 180, 220);
-  const rightFarStart = pointAt(start, { lat: -startDir.lat, lng: -startDir.lng }, rightNormal, 320, 360);
+  const leftNearStart = pointAt(start, { north: -startDir.north, east: -startDir.east }, leftNormal, 180, 220);
+  const leftFarStart = pointAt(start, { north: -startDir.north, east: -startDir.east }, leftNormal, 320, 360);
+  const rightNearStart = pointAt(start, { north: -startDir.north, east: -startDir.east }, rightNormal, 180, 220);
+  const rightFarStart = pointAt(start, { north: -startDir.north, east: -startDir.east }, rightNormal, 320, 360);
   const leftNearEnd = pointAt(end, endDir, leftNormal, 180, 220);
   const leftFarEnd = pointAt(end, endDir, leftNormal, 320, 360);
   const rightNearEnd = pointAt(end, endDir, rightNormal, 180, 220);
@@ -372,7 +554,8 @@ function candidateViaSets(geofences: Geofence[]): LatLngPoint[][] {
 }
 
 async function fetchOsrmRoute(points: LatLngPoint[]): Promise<RouteFetchResult> {
-  const cacheKey = fingerprintPoints(points);
+  const env = getRoutingEnv();
+  const cacheKey = `osrm:${fingerprintPoints(points)}`;
   if (routeCache.has(cacheKey)) {
     return { ...routeCache.get(cacheKey)!, cacheHit: true };
   }
@@ -382,7 +565,7 @@ async function fetchOsrmRoute(points: LatLngPoint[]): Promise<RouteFetchResult> 
   }
 
   const coords = points.map(point => `${point.lng},${point.lat}`).join(';');
-  const url = `${OSRM_BASE_URL}/route/v1/driving/${coords}?overview=full&geometries=geojson&steps=false`;
+  const url = `${env.osrmBaseUrl}/route/v1/driving/${coords}?overview=full&geometries=geojson&steps=false`;
   const fetchPromise = (async () => {
     const response = await fetch(url);
     if (!response.ok) {
@@ -399,6 +582,7 @@ async function fetchOsrmRoute(points: LatLngPoint[]): Promise<RouteFetchResult> 
       coordinates: route.geometry.coordinates.map(([lng, lat]: [number, number]) => [lat, lng]),
       distanceKm: +(route.distance / 1000).toFixed(2),
       durationMin: +(route.duration / 60).toFixed(1),
+      source: 'osrm' as const,
     };
     routeCache.set(cacheKey, result);
     return result;
@@ -413,13 +597,103 @@ async function fetchOsrmRoute(points: LatLngPoint[]): Promise<RouteFetchResult> 
   }
 }
 
-async function routeLegWithAvoidance(start: LatLngPoint, end: LatLngPoint, geofences: Geofence[]): Promise<RoutedRoad> {
+async function fetchMapboxRoute(points: LatLngPoint[], geofences: Geofence[] = [], applyRoadBlockExclusions = true): Promise<RouteFetchResult> {
+  const env = getRoutingEnv();
+  const excludePoints = applyRoadBlockExclusions ? sampleRoadBlockExcludePoints(geofences) : [];
+  const cacheKey = `mapbox:${fingerprintPoints(points)}:${excludePoints.map(point => `${point.lat.toFixed(6)},${point.lng.toFixed(6)}`).join('|')}:${env.mapboxDepartAt}`;
+  if (routeCache.has(cacheKey)) {
+    return { ...routeCache.get(cacheKey)!, cacheHit: true };
+  }
+  if (inflightCache.has(cacheKey)) {
+    const cached = await inflightCache.get(cacheKey)!;
+    return { ...cached, cacheHit: true };
+  }
+
+  const coords = points.map(point => `${point.lng},${point.lat}`).join(';');
+  const params = new URLSearchParams({
+    access_token: env.mapboxAccessToken,
+    geometries: 'geojson',
+    overview: 'full',
+    steps: 'false',
+  });
+
+  if (env.mapboxProfile.includes('driving-traffic')) {
+    params.set('annotations', 'congestion,distance,duration');
+  }
+  if (env.mapboxDepartAt) {
+    params.set('depart_at', env.mapboxDepartAt);
+  }
+  if (excludePoints.length > 0) {
+    params.set(
+      'exclude',
+      excludePoints.map(point => `point(${point.lng} ${point.lat})`).join(',')
+    );
+  }
+
+  const url = `${env.mapboxBaseUrl}/${env.mapboxProfile}/${coords}?${params.toString()}`;
+  const fetchPromise = (async () => {
+    const response = await fetch(url);
+    if (!response.ok) {
+      const rawBody = await response.text();
+      let details = rawBody.trim();
+      if (details) {
+        try {
+          const parsed = JSON.parse(rawBody);
+          details = parsed?.message || parsed?.code || JSON.stringify(parsed);
+        } catch {
+          // Keep the raw body when the response is not JSON.
+        }
+      }
+      throw new Error(details ? `Mapbox request failed with status ${response.status}: ${details}` : `Mapbox request failed with status ${response.status}`);
+    }
+
+    const payload = await response.json();
+    const route = payload?.routes?.[0];
+    if (!route?.geometry?.coordinates) {
+      throw new Error('Mapbox returned no route geometry');
+    }
+
+    const result = {
+      coordinates: route.geometry.coordinates.map(([lng, lat]: [number, number]) => [lat, lng]),
+      distanceKm: +((route.distance ?? 0) / 1000).toFixed(2),
+      durationMin: +((route.duration ?? 0) / 60).toFixed(1),
+      source: 'mapbox' as const,
+      trafficSegments: buildTrafficSegmentsFromMapboxRoute(route),
+    };
+    routeCache.set(cacheKey, result);
+    return result;
+  })();
+
+  inflightCache.set(cacheKey, fetchPromise);
   try {
-    const direct = await fetchOsrmRoute([start, end]);
+    const result = await fetchPromise;
+    return { ...result, cacheHit: false };
+  } finally {
+    inflightCache.delete(cacheKey);
+  }
+}
+
+async function fetchRoutedPath(points: LatLngPoint[], geofences: Geofence[] = [], applyRoadBlockExclusions = true): Promise<RouteFetchResult> {
+  const env = getRoutingEnv();
+  if (env.activeRoutingProvider === 'mapbox') {
+    try {
+      return await fetchMapboxRoute(points, geofences, applyRoadBlockExclusions);
+    } catch (error) {
+      logMapboxFallback(error);
+      return fetchOsrmRoute(points);
+    }
+  }
+  return fetchOsrmRoute(points);
+}
+
+async function routeLegWithAvoidance(start: LatLngPoint, end: LatLngPoint, geofences: Geofence[]): Promise<RoutedRoad> {
+  const env = getRoutingEnv();
+  try {
+    const direct = await fetchRoutedPath([start, end], [], false);
     if (geofences.length === 0 || !routeIntersectsAnyGeofence(direct.coordinates, geofences)) {
       return {
         ...direct,
-        source: 'osrm',
+        source: direct.source,
         cacheStatus: direct.cacheHit ? 'hit' : 'miss',
         fallbackLegCount: 0,
       };
@@ -427,26 +701,17 @@ async function routeLegWithAvoidance(start: LatLngPoint, end: LatLngPoint, geofe
 
     const candidates = candidateViaSets(geofences);
     let best: RoutedRoad | null = null;
-    let bestRoadOnly: RoutedRoad | null = {
-      ...direct,
-      source: 'osrm',
-      cacheStatus: direct.cacheHit ? 'hit' : 'miss',
-      fallbackLegCount: 0,
-    };
 
     for (const viaSet of candidates) {
       if (viaSet.some(via => geofences.some(geofence => pointInPolygon(via, geofence.coordinates)))) continue;
       try {
-        const routed = await fetchOsrmRoute([start, ...viaSet, end]);
+        const routed = await fetchRoutedPath([start, ...viaSet, end], geofences);
         const candidate: RoutedRoad = {
           ...routed,
-          source: 'osrm',
+          source: routed.source,
           cacheStatus: routed.cacheHit ? 'hit' : 'miss',
           fallbackLegCount: 0,
         };
-        if (!bestRoadOnly || candidate.distanceKm < bestRoadOnly.distanceKm) {
-          bestRoadOnly = candidate;
-        }
         if (routeIntersectsAnyGeofence(routed.coordinates, geofences)) continue;
         if (!best || candidate.distanceKm < best.distanceKm) {
           best = candidate;
@@ -461,26 +726,24 @@ async function routeLegWithAvoidance(start: LatLngPoint, end: LatLngPoint, geofe
         ...best,
         cacheStatus: best.cacheStatus ?? 'mixed',
         fallbackLegCount: 0,
-        warnings: ['Route was detoured around a blocked geofence.'],
+        warnings: [`Route was detoured around a blocked geofence using ${best.source === 'mapbox' ? 'Mapbox traffic routing' : 'OSRM'}.`],
       };
     }
 
-    if (bestRoadOnly) {
-      return {
-        ...bestRoadOnly,
-        cacheStatus: bestRoadOnly.cacheStatus ?? 'mixed',
-        fallbackLegCount: 0,
-        warnings: ['No clean detour was found, so the closest road-based reroute was kept.'],
-      };
-    }
-
-    return syntheticRoad([start, end], 'OSRM could not avoid the blocked geofence, so a straight fallback was used for this leg.');
+    return {
+      ...direct,
+      source: direct.source,
+      cacheStatus: direct.cacheHit ? 'hit' : 'miss',
+      fallbackLegCount: 0,
+      warnings: ['No clean road detour was found, so the original road path was kept for this leg.'],
+    };
   } catch {
-    return syntheticRoad([start, end], 'OSRM routing failed, so a straight fallback was used for this leg.');
+    return syntheticRoad([start, end], `${env.activeRoutingProvider === 'mapbox' ? 'Mapbox traffic routing' : 'OSRM'} failed, so a straight fallback was used for this leg.`);
   }
 }
 
 export async function routePathOnRoads(nodes: Node[], path: string[], geofences: Geofence[] = []): Promise<RoutedRoad | null> {
+  const env = getRoutingEnv();
   const nodeMap = new Map(nodes.map(node => [node.id, node]));
   const routePoints = path
     .map(id => nodeMap.get(id))
@@ -493,23 +756,27 @@ export async function routePathOnRoads(nodes: Node[], path: string[], geofences:
   const geofenceWarnings = [...validateGeofences(geofences), ...sanitizeWarnings];
 
   if (sanitizedGeofences.length === 0) {
-    try {
-      const routed = await fetchOsrmRoute(routePoints);
-      return {
-        coordinates: routed.coordinates,
-        distanceKm: routed.distanceKm,
-        durationMin: routed.durationMin,
-        source: 'osrm',
-        cacheStatus: routed.cacheHit ? 'hit' : 'miss',
-        fallbackLegCount: 0,
-        warnings: geofenceWarnings.length > 0 ? geofenceWarnings : undefined,
-      };
-    } catch {
-      const fallback = syntheticRoad(routePoints, 'OSRM routing failed, so a straight fallback was used for this route.');
-      return {
-        ...fallback,
-        warnings: [...(fallback.warnings ?? []), ...geofenceWarnings],
-      };
+    const canRequestWholePath = env.activeRoutingProvider !== 'mapbox' || routePoints.length <= 25;
+    if (canRequestWholePath) {
+      try {
+        const routed = await fetchRoutedPath(routePoints, []);
+        return {
+          coordinates: routed.coordinates,
+          distanceKm: routed.distanceKm,
+          durationMin: routed.durationMin,
+          source: routed.source,
+          trafficSegments: routed.trafficSegments,
+          cacheStatus: routed.cacheHit ? 'hit' : 'miss',
+          fallbackLegCount: 0,
+          warnings: geofenceWarnings.length > 0 ? geofenceWarnings : undefined,
+        };
+      } catch {
+        const fallback = syntheticRoad(routePoints, `${env.activeRoutingProvider === 'mapbox' ? 'Mapbox traffic routing' : 'OSRM'} failed, so a straight fallback was used for this route.`);
+        return {
+          ...fallback,
+          warnings: [...(fallback.warnings ?? []), ...geofenceWarnings],
+        };
+      }
     }
   }
 
@@ -520,12 +787,14 @@ export async function routePathOnRoads(nodes: Node[], path: string[], geofences:
   let fallbackLegCount = 0;
   let cacheHitCount = 0;
   let cacheMissCount = 0;
+  const trafficSegments: RouteTrafficSegment[] = [];
 
   for (let index = 0; index < routePoints.length - 1; index += 1) {
     const routedLeg = await routeLegWithAvoidance(routePoints[index], routePoints[index + 1], sanitizedGeofences);
     distanceKm += routedLeg.distanceKm;
     durationMin += routedLeg.durationMin;
     if (routedLeg.warnings) warnings.push(...routedLeg.warnings);
+    if (routedLeg.trafficSegments?.length) trafficSegments.push(...routedLeg.trafficSegments);
     if (routedLeg.source === 'synthetic') fallbackLegCount += 1;
     if (routedLeg.cacheStatus === 'hit') cacheHitCount += 1;
     if (routedLeg.cacheStatus === 'miss') cacheMissCount += 1;
@@ -540,7 +809,8 @@ export async function routePathOnRoads(nodes: Node[], path: string[], geofences:
     coordinates,
     distanceKm: +distanceKm.toFixed(2),
     durationMin: +durationMin.toFixed(1),
-    source: fallbackLegCount > 0 ? 'synthetic' : 'osrm',
+    source: fallbackLegCount > 0 ? 'synthetic' : env.activeRoutingProvider,
+    trafficSegments: trafficSegments.length > 0 ? trafficSegments : undefined,
     cacheStatus:
       cacheHitCount > 0 && cacheMissCount > 0
         ? 'mixed'
