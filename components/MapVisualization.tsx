@@ -187,6 +187,12 @@ function trafficColor(congestion: TrafficCongestionLevel) {
   }
 }
 
+function trafficLineStyle(congestion: TrafficCongestionLevel, routeKind: 'baseline' | 'optimized') {
+  return routeKind === 'baseline'
+    ? { color: trafficColor(congestion), weight: 4, opacity: 0.58, dashArray: '8 8' }
+    : { color: trafficColor(congestion), weight: 6, opacity: 0.95 };
+}
+
 const DEFAULT_FILTERS: DisplayFilters = {
   showBaseline: true,
   showOptimized: true,
@@ -508,6 +514,13 @@ function GeoMap({
     const node = nodeMap.get(id);
     return typeof node?.lat === 'number' && typeof node?.lng === 'number';
   });
+  const baselineTrafficLines = useMemo(
+    () =>
+      filters.showTraffic && data.baselineRoad?.source === 'mapbox'
+        ? buildTrafficDisplayLines(data.baselineRoad.trafficSegments ?? [])
+        : [],
+    [data.baselineRoad, filters.showTraffic]
+  );
   const trafficLines = useMemo(
     () =>
       filters.showTraffic && !filters.upcomingStops && data.optimizedRoad?.source === 'mapbox'
@@ -515,8 +528,11 @@ function GeoMap({
         : [],
     [data.optimizedRoad, filters.showTraffic, filters.upcomingStops]
   );
+  const baselineTrafficOverlayActive = filters.showBaseline && baselineTrafficLines.length > 0;
   const trafficOverlayActive = trafficLines.length > 0;
-  const trafficAvailable = data.optimizedRoad?.source === 'mapbox' && (data.optimizedRoad.trafficSegments?.length ?? 0) > 0;
+  const trafficAvailable =
+    (data.optimizedRoad?.source === 'mapbox' && (data.optimizedRoad.trafficSegments?.length ?? 0) > 0) ||
+    (data.baselineRoad?.source === 'mapbox' && (data.baselineRoad.trafficSegments?.length ?? 0) > 0);
   const trafficOverlayStatus = trafficOverlayActive
     ? 'traffic overlay on'
     : filters.showTraffic
@@ -604,9 +620,16 @@ function GeoMap({
         />
 
         <Pane name="baseline" style={{ zIndex: 350 }}>
-          {filters.showBaseline && baselinePath.length > 1 && (
+          {filters.showBaseline && baselinePath.length > 1 && !baselineTrafficOverlayActive && (
             <Polyline pathOptions={{ color: '#f59e0b', dashArray: '8 8', weight: 4, opacity: 0.72 }} positions={baselinePath} />
           )}
+          {baselineTrafficOverlayActive && baselineTrafficLines.map((line, index) => (
+            <Polyline
+              key={`baseline-${line.congestion}-${index}`}
+              pathOptions={trafficLineStyle(line.congestion, 'baseline')}
+              positions={line.coordinates}
+            />
+          ))}
         </Pane>
 
         <Pane name="optimized" style={{ zIndex: 450 }}>
@@ -616,7 +639,7 @@ function GeoMap({
           {filters.showOptimized && trafficOverlayActive && trafficLines.map((line, index) => (
             <Polyline
               key={`${line.congestion}-${index}`}
-              pathOptions={{ color: trafficColor(line.congestion), weight: 6, opacity: 0.95 }}
+              pathOptions={trafficLineStyle(line.congestion, 'optimized')}
               positions={line.coordinates}
             />
           ))}
@@ -757,6 +780,7 @@ function GeoMap({
       {trafficOverlayActive && (
         <div className="absolute left-4 bottom-20 z-[900] rounded-lg border border-slate-700/80 bg-slate-950/85 px-3 py-2 text-[10px] font-mono text-slate-300 shadow-xl backdrop-blur">
           <div className="mb-1 uppercase tracking-wider text-slate-500">Traffic Overlay</div>
+          <div className="mb-1 text-slate-500">Baseline uses dashed lighter lines. Optimized uses solid stronger lines.</div>
           <div className="flex items-center gap-2"><span className="inline-block h-0.5 w-4 bg-green-500" />Low</div>
           <div className="flex items-center gap-2"><span className="inline-block h-0.5 w-4 bg-yellow-400" />Moderate</div>
           <div className="flex items-center gap-2"><span className="inline-block h-0.5 w-4 bg-orange-500" />Heavy</div>
