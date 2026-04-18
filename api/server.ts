@@ -3,7 +3,19 @@ import cors from 'cors';
 import { ensureLocalEnvLoaded } from '../services/env';
 import { getAiConfigStatus, optimizeRoute } from '../services/geminiService';
 import { getRoutingConfigStatus, routePathOnRoads } from '../services/roadRoutingService';
-import { AppConfigStatus, Geofence, Metrics, Node, OptimizationResult } from '../types';
+import {
+  AppConfigStatus,
+  FleetComparison,
+  FleetConfig,
+  FleetRoutePlan,
+  Geofence,
+  Metrics,
+  Node,
+  OptimizationResult,
+  RouteDiagnostics,
+  RouteSummary,
+  RoutedRoad,
+} from '../types';
 
 type ImagePayload = { base64: string; mimeType: string };
 
@@ -50,7 +62,7 @@ function labelOf(nodeMap: Map<string, OptimizationResult['nodes'][number]>, id?:
   return id ? nodeMap.get(id)?.label ?? id : 'N/A';
 }
 
-function longestLegKm(road?: OptimizationResult['optimizedRoad'] | OptimizationResult['baselineRoad']): number {
+function longestLegKm(road?: RoutedRoad | null): number {
   if (!road || road.coordinates.length < 2) return 0;
   let longest = 0;
   for (let i = 0; i < road.coordinates.length - 1; i += 1) {
@@ -63,26 +75,107 @@ function longestLegKm(road?: OptimizationResult['optimizedRoad'] | OptimizationR
   return +longest.toFixed(1);
 }
 
-function buildRouteSummary(result: OptimizationResult): OptimizationResult['routeSummary'] {
-  const nodeMap = new Map(result.nodes.map(node => [node.id, node]));
-  const activePath = result.optimizedPath;
-  const stopIds = activePath.filter((id, index) => index !== 0 && index !== activePath.length - 1);
-  const selectedLegIndex = result.routeFocus?.selectedLegIndex ?? undefined;
+function normalizeFleetConfig(result: OptimizationResult): FleetConfig {
+  const routeCount = Math.max(result.optimizedRoutes?.length ?? 0, result.baselineRoutes?.length ?? 0, result.fleetConfig?.vehicleCount ?? 0, 1);
+  const vehicleLabels = Array.from({ length: routeCount }, (_, index) => result.fleetConfig?.vehicleLabels?.[index] ?? `Vehicle ${index + 1}`);
   return {
-    totalLegs: Math.max(0, activePath.length - 1),
-    firstStopLabel: labelOf(nodeMap, stopIds[0]),
-    lastStopLabel: labelOf(nodeMap, stopIds[stopIds.length - 1]),
-    longestLegKm: longestLegKm(result.optimizedRoad ?? result.baselineRoad),
-    selectedStopEtaMin:
-      selectedLegIndex !== undefined && result.optimizedRoad
-        ? +((result.optimizedRoad.durationMin / Math.max(result.optimizedPath.length - 1, 1)) * (selectedLegIndex + 1)).toFixed(1)
-        : undefined,
+    vehicleCount: routeCount,
+    vehicleLabels,
   };
 }
 
-function buildDiagnostics(result: OptimizationResult): OptimizationResult['diagnostics'] {
-  const fallbackLegCount = (result.optimizedRoad?.fallbackLegCount ?? 0) + (result.baselineRoad?.fallbackLegCount ?? 0);
-  const cacheStatuses = [result.baselineRoad?.cacheStatus, result.optimizedRoad?.cacheStatus].filter(Boolean);
+function buildRouteSummary(path: string[], nodeMap: Map<string, OptimizationResult['nodes'][number]>, road?: RoutedRoad | null): RouteSummary {
+  const stopIds = path.filter((id, index) => index !== 0 && index !== path.length - 1);
+  return {
+    totalLegs: Math.max(0, path.length - 1),
+    stopCount: stopIds.length,
+    firstStopLabel: labelOf(nodeMap, stopIds[0]),
+    lastStopLabel: labelOf(nodeMap, stopIds[stopIds.length - 1]),
+    longestLegKm: longestLegKm(road),
+  };
+}
+
+function routeMetrics(road?: RoutedRoad | null): Metrics {
+  if (!road) return { distance: 0, time: 0, emissions: 0 };
+  return {
+    distance: road.distanceKm,
+    time: road.durationMin,
+    emissions: computeRoadEmissions(road.distanceKm, road.durationMin),
+  };
+}
+
+function buildFleetRoutePlan(
+  path: string[],
+  vehicleIndex: number,
+  vehicleLabel: string,
+  nodeMap: Map<string, OptimizationResult['nodes'][number]>,
+  road?: RoutedRoad | null
+): FleetRoutePlan {
+  return {
+    routeId: `vehicle_${vehicleIndex + 1}`,
+    vehicleIndex,
+    vehicleLabel,
+    path,
+    road: road ?? null,
+    metrics: routeMetrics(road),
+    summary: buildRouteSummary(path, nodeMap, road),
+    warnings: road?.warnings ?? [],
+  };
+}
+
+async function buildFleetRoutePlans(
+  nodes: Node[],
+  paths: string[][],
+  geofences: Geofence[],
+  fleetConfig: FleetConfig
+): Promise<FleetRoutePlan[]> {
+  const nodeMap = new Map(nodes.map(node => [node.id, node]));
+  const roads = await Promise.all(paths.map(path => routePathOnRoads(nodes, path, geofences)));
+  return paths.map((path, index) =>
+    buildFleetRoutePlan(path, index, fleetConfig.vehicleLabels?.[index] ?? `Vehicle ${index + 1}`, nodeMap, roads[index])
+  );
+}
+
+function aggregateRouteMetrics(routes: FleetRoutePlan[]): Metrics {
+  return routes.reduce(
+    (totals, route) => ({
+      distance: +(totals.distance + route.metrics.distance).toFixed(2),
+      time: +(totals.time + route.metrics.time).toFixed(1),
+      emissions: +(totals.emissions + route.metrics.emissions).toFixed(3),
+    }),
+    { distance: 0, time: 0, emissions: 0 }
+  );
+}
+
+function buildComparison(baseline: Metrics, optimized: Metrics): FleetComparison {
+  const improvement = buildImprovement(baseline, optimized);
+  if (improvement.timePct > 0 || (improvement.timePct === 0 && (improvement.distancePct > 0 || improvement.emissionsPct > 0))) {
+    return {
+      status: 'improved',
+      headline: 'Fleet plan improved',
+      detail: `Time ${improvement.timePct}% better, distance ${improvement.distancePct}% better, emissions ${improvement.emissionsPct}% better.`,
+    };
+  }
+  if (improvement.timePct < 0) {
+    return {
+      status: 'worsened',
+      headline: 'Fleet plan worsened',
+      detail: `Road-level traffic evaluation erased the ordering gain. Time moved ${Math.abs(improvement.timePct)}% in the wrong direction.`,
+    };
+  }
+  return {
+    status: 'mixed',
+    headline: 'Fleet result is mixed',
+    detail: `Some fleet metrics improved while others stayed flat or regressed. Time ${improvement.timePct}%, distance ${improvement.distancePct}%, emissions ${improvement.emissionsPct}%.`,
+  };
+}
+
+function buildDiagnostics(result: OptimizationResult): RouteDiagnostics {
+  const allRoads = [...(result.baselineRoutes ?? []), ...(result.optimizedRoutes ?? [])]
+    .map(route => route.road)
+    .filter((road): road is RoutedRoad => Boolean(road));
+  const fallbackLegCount = allRoads.reduce((sum, road) => sum + (road.fallbackLegCount ?? 0), 0);
+  const cacheStatuses = allRoads.map(road => road.cacheStatus).filter(Boolean);
   const cacheStatus =
     cacheStatuses.length === 0
       ? 'none'
@@ -91,6 +184,8 @@ function buildDiagnostics(result: OptimizationResult): OptimizationResult['diagn
         : cacheStatuses.every(status => status === 'miss')
           ? 'miss'
           : 'mixed';
+  const providers = new Set(allRoads.map(road => road.source));
+  const primaryProvider = providers.has('mapbox') ? 'mapbox' : providers.has('osrm') ? 'osrm' : result.coordinateMode === 'geo' ? 'synthetic' : 'demo';
   const geofenceImpact =
     result.geofences?.length
       ? fallbackLegCount > 0
@@ -101,7 +196,7 @@ function buildDiagnostics(result: OptimizationResult): OptimizationResult['diagn
     result.coordinateMode !== 'geo'
       ? 'demo_mode'
       : fallbackLegCount > 0
-        ? result.optimizedRoad?.source === 'synthetic'
+        ? allRoads.some(road => road.source === 'synthetic')
           ? 'synthetic_fallback'
           : 'partial_fallback'
         : 'full_osrm';
@@ -111,138 +206,127 @@ function buildDiagnostics(result: OptimizationResult): OptimizationResult['diagn
     fallbackLegCount,
     cacheStatus,
     geofenceImpact,
-    provider:
-      result.coordinateMode !== 'geo'
-        ? 'demo'
-        : result.optimizedRoad?.source ?? result.baselineRoad?.source ?? 'synthetic',
-    trafficMode:
-      result.coordinateMode !== 'geo'
-        ? 'freeflow'
-        : result.optimizedRoad?.source === 'mapbox' || result.baselineRoad?.source === 'mapbox'
-          ? 'historical_or_live'
-          : 'freeflow',
-    warnings: [...(result.routeWarnings ?? [])],
+    provider: primaryProvider,
+    trafficMode: allRoads.some(road => road.source === 'mapbox') ? 'historical_or_live' : 'freeflow',
+    warnings: [...new Set(allRoads.flatMap(road => road.warnings ?? []))],
   };
 }
 
-function routeGeojsonFeature(
-  result: OptimizationResult,
-  roadKey: 'baselineRoad' | 'optimizedRoad',
-  pathKey: 'baselinePath' | 'optimizedPath',
-  label: string
-) {
-  const road = result[roadKey];
-  if (road?.coordinates?.length) {
-    return {
+function fleetGeojsonFeatures(result: OptimizationResult) {
+  const features: any[] = [];
+  const pushRouteFeature = (route: FleetRoutePlan, collection: 'baseline' | 'optimized') => {
+    const label = `${collection}:${route.vehicleLabel}`;
+    if (route.road?.coordinates?.length) {
+      features.push({
+        type: 'Feature',
+        properties: {
+          label,
+          collection,
+          vehicleLabel: route.vehicleLabel,
+          vehicleIndex: route.vehicleIndex,
+          routeId: route.routeId,
+          source: route.road.source,
+        },
+        geometry: {
+          type: 'LineString',
+          coordinates: route.road.coordinates.map(([lat, lng]) => [lng, lat]),
+        },
+      });
+      return;
+    }
+
+    const nodeMap = new Map(result.nodes.map(node => [node.id, node]));
+    features.push({
       type: 'Feature',
-      properties: { label, source: road.source },
+      properties: {
+        label,
+        collection,
+        vehicleLabel: route.vehicleLabel,
+        vehicleIndex: route.vehicleIndex,
+        routeId: route.routeId,
+        source: 'node-order',
+      },
       geometry: {
         type: 'LineString',
-        coordinates: road.coordinates.map(([lat, lng]) => [lng, lat]),
+        coordinates: route.path
+          .map(id => nodeMap.get(id))
+          .filter(Boolean)
+          .map(node =>
+            result.coordinateMode === 'geo' && typeof node!.lat === 'number' && typeof node!.lng === 'number'
+              ? [node!.lng, node!.lat]
+              : [node!.x, node!.y]
+          ),
       },
-    };
-  }
-
-  const nodeMap = new Map(result.nodes.map(node => [node.id, node]));
-  return {
-    type: 'Feature',
-    properties: { label, source: 'node-order' },
-    geometry: {
-      type: 'LineString',
-      coordinates: result[pathKey]
-        .map(id => nodeMap.get(id))
-        .filter(Boolean)
-        .map(node =>
-          result.coordinateMode === 'geo' && typeof node!.lat === 'number' && typeof node!.lng === 'number'
-            ? [node!.lng, node!.lat]
-            : [node!.x, node!.y]
-        ),
-    },
+    });
   };
+
+  result.baselineRoutes.forEach(route => pushRouteFeature(route, 'baseline'));
+  result.optimizedRoutes.forEach(route => pushRouteFeature(route, 'optimized'));
+  return features;
 }
 
-async function applyRoadRouting(
-  result: OptimizationResult,
-  geofences: Geofence[] = [],
-  manualRouteOrder?: string[]
-): Promise<OptimizationResult> {
+async function applyRoadRouting(result: OptimizationResult, geofences: Geofence[] = []): Promise<OptimizationResult> {
+  const fleetConfig = normalizeFleetConfig(result);
+  const baselinePaths = result.baselineRoutes?.length ? result.baselineRoutes.map(route => route.path) : [result.baselinePath];
+  const optimizedPaths = result.optimizedRoutes?.length ? result.optimizedRoutes.map(route => route.path) : [result.aiOptimizedPath ?? result.optimizedPath];
+
   if (result.coordinateMode !== 'geo') {
+    const nodeMap = new Map(result.nodes.map(node => [node.id, node]));
+    const baselineRoutes = baselinePaths.map((path, index) =>
+      buildFleetRoutePlan(path, index, fleetConfig.vehicleLabels?.[index] ?? `Vehicle ${index + 1}`, nodeMap, null)
+    );
+    const optimizedRoutes = optimizedPaths.map((path, index) =>
+      buildFleetRoutePlan(path, index, fleetConfig.vehicleLabels?.[index] ?? `Vehicle ${index + 1}`, nodeMap, null)
+    );
+    const baselineMetrics = aggregateRouteMetrics(baselineRoutes);
+    const optimizedMetrics = aggregateRouteMetrics(optimizedRoutes);
     const next = {
       ...result,
+      fleetConfig,
       geofences,
-      manualRouteOrder,
-      overrideMode: manualRouteOrder?.length ? 'manual_order' : 'none',
-      activeRouteLabel: manualRouteOrder?.length ? 'manual' : 'optimized',
-      aiOptimizedPath: result.aiOptimizedPath ?? result.optimizedPath,
-    } as OptimizationResult;
+      baselineRoutes,
+      optimizedRoutes,
+      metrics: {
+        baseline: baselineMetrics,
+        optimized: optimizedMetrics,
+        improvement: buildImprovement(baselineMetrics, optimizedMetrics),
+      },
+      comparison: buildComparison(baselineMetrics, optimizedMetrics),
+    };
     return {
       ...next,
-      routeSummary: buildRouteSummary(next),
       diagnostics: buildDiagnostics(next),
+      baselineRoad: baselineRoutes[0]?.road ?? null,
+      optimizedRoad: optimizedRoutes[0]?.road ?? null,
+      routeWarnings: next.diagnostics?.warnings ?? [],
     };
   }
 
-  const aiOptimizedPath = result.aiOptimizedPath ?? result.optimizedPath;
-  const activePath = manualRouteOrder?.length ? manualRouteOrder : aiOptimizedPath;
-  const baselineRoad = await routePathOnRoads(result.nodes as Node[], result.baselinePath, []);
-  const optimizedRoad = await routePathOnRoads(result.nodes as Node[], activePath, geofences);
-
-  const baselineMetrics: Metrics = baselineRoad
-    ? {
-        distance: baselineRoad.distanceKm,
-        time: baselineRoad.durationMin,
-        emissions: computeRoadEmissions(baselineRoad.distanceKm, baselineRoad.durationMin),
-      }
-    : result.metrics.baseline;
-
-  const optimizedMetrics: Metrics = optimizedRoad
-    ? {
-        distance: optimizedRoad.distanceKm,
-        time: optimizedRoad.durationMin,
-        emissions: computeRoadEmissions(optimizedRoad.distanceKm, optimizedRoad.durationMin),
-      }
-    : result.metrics.optimized;
-
-  const routeWarnings = [
-    ...(baselineRoad?.warnings ?? []),
-    ...(optimizedRoad?.warnings ?? []),
-  ];
-
-  const logs = [...result.logs];
-  const roadBlockCount = geofences.filter(geofence => geofence.kind === 'road_block').length;
-  if (manualRouteOrder?.length) {
-    logs.unshift('[00] Dispatcher override active: the stop order was manually adjusted and re-routed on real roads.');
-  } else if (geofences.length > 0) {
-    logs.unshift(
-      roadBlockCount === geofences.length
-        ? `[00] Route updated with ${roadBlockCount} dispatcher road block${roadBlockCount === 1 ? '' : 's'} and recalculated on real roads.`
-        : `[00] Route updated with ${geofences.length} dispatcher geofence${geofences.length === 1 ? '' : 's'} and recalculated on real roads.`
-    );
-  }
-
-  const next: OptimizationResult = {
+  const baselineRoutes = await buildFleetRoutePlans(result.nodes as Node[], baselinePaths, geofences, fleetConfig);
+  const optimizedRoutes = await buildFleetRoutePlans(result.nodes as Node[], optimizedPaths, geofences, fleetConfig);
+  const baselineMetrics = aggregateRouteMetrics(baselineRoutes);
+  const optimizedMetrics = aggregateRouteMetrics(optimizedRoutes);
+  const diagnosticsSeed: OptimizationResult = {
     ...result,
-    aiOptimizedPath,
-    optimizedPath: activePath,
+    fleetConfig,
     geofences,
-    manualRouteOrder,
-    overrideMode: manualRouteOrder?.length ? 'manual_order' : 'none',
-    activeRouteLabel: manualRouteOrder?.length ? 'manual' : 'optimized',
-    baselineRoad,
-    optimizedRoad,
-    routeWarnings,
-    logs,
+    baselineRoutes,
+    optimizedRoutes,
+    baselineRoad: baselineRoutes[0]?.road ?? null,
+    optimizedRoad: optimizedRoutes[0]?.road ?? null,
     metrics: {
       baseline: baselineMetrics,
       optimized: optimizedMetrics,
       improvement: buildImprovement(baselineMetrics, optimizedMetrics),
     },
   };
+  const diagnostics = buildDiagnostics(diagnosticsSeed);
 
   return {
-    ...next,
-    routeSummary: buildRouteSummary(next),
-    diagnostics: buildDiagnostics(next),
+    ...diagnosticsSeed,
+    comparison: buildComparison(baselineMetrics, optimizedMetrics),
+    diagnostics,
+    routeWarnings: diagnostics.warnings,
   };
 }
 
@@ -284,7 +368,7 @@ app.get(['/config', '/api/config'], (_req, res) => {
 
 app.post(['/optimize', '/api/optimize'], async (req, res) => {
   try {
-    const { stopsText, stops, images, preferences, optimization, geofences } = req.body ?? {};
+    const { stopsText, stops, images, preferences, optimization, geofences, fleet } = req.body ?? {};
 
     let stopsInput: string | undefined = typeof stopsText === 'string' && stopsText.trim() ? stopsText : undefined;
     if (!stopsInput && Array.isArray(stops)) {
@@ -307,22 +391,17 @@ app.post(['/optimize', '/api/optimize'], async (req, res) => {
           .map((img: any) => ({ base64: img.base64, mimeType: img.mimeType }))
       : [];
 
-    const baseResult = await optimizeRoute(stopsInput, contextImages, preferences, optimization);
+    const baseResult = await optimizeRoute(stopsInput, contextImages, preferences, optimization, fleet as FleetConfig | undefined);
     const result = await applyRoadRouting(baseResult as unknown as OptimizationResult, Array.isArray(geofences) ? geofences : []);
-
-    const geojson = {
-      type: 'FeatureCollection',
-      features: [
-        routeGeojsonFeature(result, 'baselineRoad', 'baselinePath', 'baseline'),
-        routeGeojsonFeature(result, 'optimizedRoad', 'optimizedPath', result.activeRouteLabel === 'manual' ? 'manual' : 'optimized'),
-      ],
-    };
 
     res.json({
       ok: true,
       meta: { generatedAt: new Date().toISOString() },
       result,
-      geojson,
+      geojson: {
+        type: 'FeatureCollection',
+        features: fleetGeojsonFeatures(result),
+      },
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message ?? 'Unknown error' });
@@ -331,30 +410,24 @@ app.post(['/optimize', '/api/optimize'], async (req, res) => {
 
 app.post(['/reroute', '/api/reroute'], async (req, res) => {
   try {
-    const { result, geofences, manualRouteOrder } = req.body ?? {};
+    const { result, geofences } = req.body ?? {};
     if (!result || !Array.isArray(result.nodes) || !Array.isArray(result.baselinePath) || !Array.isArray(result.optimizedPath)) {
       return res.status(400).json({ error: 'A prior optimization result payload is required.' });
     }
 
     const rerouted = await applyRoadRouting(
       result as OptimizationResult,
-      Array.isArray(geofences) ? geofences : result.geofences ?? [],
-      Array.isArray(manualRouteOrder) ? manualRouteOrder : undefined
+      Array.isArray(geofences) ? geofences : result.geofences ?? []
     );
-
-    const geojson = {
-      type: 'FeatureCollection',
-      features: [
-        routeGeojsonFeature(rerouted, 'baselineRoad', 'baselinePath', 'baseline'),
-        routeGeojsonFeature(rerouted, 'optimizedRoad', 'optimizedPath', rerouted.activeRouteLabel === 'manual' ? 'manual' : 'optimized'),
-      ],
-    };
 
     res.json({
       ok: true,
       meta: { generatedAt: new Date().toISOString() },
       result: rerouted,
-      geojson,
+      geojson: {
+        type: 'FeatureCollection',
+        features: fleetGeojsonFeatures(rerouted),
+      },
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message ?? 'Unknown error' });
@@ -364,4 +437,3 @@ app.post(['/reroute', '/api/reroute'], async (req, res) => {
 app.listen(port, () => {
   console.log(`[reasonroute-api] listening on http://localhost:${port}`);
 });
-

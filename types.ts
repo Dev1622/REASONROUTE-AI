@@ -62,6 +62,7 @@ export interface ValidationSummary {
 
 export interface RouteSummary {
   totalLegs: number;
+  stopCount?: number;
   firstStopLabel: string;
   lastStopLabel: string;
   longestLegKm: number;
@@ -99,6 +100,7 @@ export interface DisplayFilters {
 export interface RouteFocus {
   selectedStopId?: string;
   selectedLegIndex?: number;
+  selectedRouteId?: string;
   fitToActiveRoute?: boolean;
 }
 
@@ -114,10 +116,36 @@ export interface Improvement {
   emissionsPct: number;
 }
 
+export interface FleetConfig {
+  vehicleCount: number;
+  vehicleLabels?: string[];
+}
+
+export interface FleetRoutePlan {
+  routeId: string;
+  vehicleIndex: number;
+  vehicleLabel: string;
+  path: string[];
+  road?: RoutedRoad | null;
+  metrics: Metrics;
+  summary: RouteSummary;
+  warnings?: string[];
+}
+
+export interface FleetComparison {
+  status: 'improved' | 'worsened' | 'mixed';
+  headline: string;
+  detail: string;
+}
+
 export interface OptimizationResult {
   nodes: Node[];
   baselinePath: string[]; // Array of Node IDs
   optimizedPath: string[]; // Array of Node IDs
+  fleetConfig?: FleetConfig;
+  baselineRoutes: FleetRoutePlan[];
+  optimizedRoutes: FleetRoutePlan[];
+  comparison?: FleetComparison;
   aiOptimizedPath?: string[];
   disruptions: Disruption[];
   geofences?: Geofence[];

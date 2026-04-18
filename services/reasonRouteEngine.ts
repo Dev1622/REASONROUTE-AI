@@ -94,6 +94,7 @@ export type EngineResult = {
   engineLogs: string[];
   recursionDepth: number;
   skippedNodes?: string[];
+  baselineRoutes?: string[][];
   optimizedRoutes?: string[][];
 };
 
@@ -1948,8 +1949,19 @@ export function runReasonRouteEngine(input: EngineInput): EngineResult {
     logs.push(`[Context] Disruption zone: "${zone.description}" at (${zone.x}, ${zone.y}), r=${zone.radius}.`);
   }
 
+  let baselineRoutes: string[][] | undefined;
   let optimizedRoutes: string[][] | undefined;
   if (input.benchmark) {
+    const baselineSplit = buildBenchmarkConstrainedRoutes(baselinePath, allNodes, depotId, input.benchmark, logs);
+    if (baselineSplit) {
+      baselineRoutes = baselineSplit.routes;
+      logs.push(
+        `[Benchmark] Built ${baselineSplit.routes.length} baseline routes | cost=${baselineSplit.totalCost.toFixed(0)} | metric=${input.benchmark.metric}.`
+      );
+    } else {
+      logs.push("[Benchmark] Baseline route-set generation failed.");
+    }
+
     const split = buildBenchmarkConstrainedRoutes(finalPath, allNodes, depotId, input.benchmark, logs);
     if (split) {
       optimizedRoutes = split.routes;
@@ -1969,6 +1981,7 @@ export function runReasonRouteEngine(input: EngineInput): EngineResult {
     engineLogs: logs,
     recursionDepth: maxDepth,
     skippedNodes,
+    baselineRoutes,
     optimizedRoutes,
   };
 }

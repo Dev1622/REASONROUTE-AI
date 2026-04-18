@@ -3,7 +3,7 @@ import Sidebar from './components/Sidebar';
 import MapVisualization from './components/MapVisualization';
 import MetricsDashboard from './components/MetricsDashboard';
 import { fetchConfigStatus, optimizeViaApi, rerouteViaApi } from './services/apiClient';
-import { AppConfigStatus, DisplayFilters, Geofence, OptimizationResult, ProcessingStatus, RouteFocus } from './types';
+import { AppConfigStatus, DisplayFilters, FleetConfig, Geofence, OptimizationResult, ProcessingStatus, RouteFocus } from './types';
 
 const App: React.FC = () => {
   const [status, setStatus] = useState<ProcessingStatus>(ProcessingStatus.IDLE);
@@ -20,35 +20,17 @@ const App: React.FC = () => {
     fitToActiveRoute: true,
   });
   const [history, setHistory] = useState<
-    { ts: string; improvement: OptimizationResult['metrics']['improvement']; baseline: number; optimized: number }[]
+    { ts: string; improvement: OptimizationResult['metrics']['improvement']; baseline: number; optimized: number; vehicles: number }[]
   >([]);
   const [configStatus, setConfigStatus] = useState<AppConfigStatus | null>(null);
+  const [metricsCollapsed, setMetricsCollapsed] = useState(false);
 
   useEffect(() => {
     fetchConfigStatus().then(setConfigStatus).catch(() => setConfigStatus(null));
   }, []);
 
   useEffect(() => {
-    setResult(prev => {
-      if (!prev) return prev;
-      const selectedLegIndex = routeFocus.selectedLegIndex;
-      const selectedStopEtaMin =
-        selectedLegIndex !== undefined && prev.optimizedRoad
-          ? +((prev.optimizedRoad.durationMin / Math.max(prev.optimizedPath.length - 1, 1)) * (selectedLegIndex + 1)).toFixed(1)
-          : prev.routeSummary?.selectedStopEtaMin;
-
-      return {
-        ...prev,
-        displayFilters,
-        routeFocus,
-        routeSummary: prev.routeSummary
-          ? {
-              ...prev.routeSummary,
-              selectedStopEtaMin,
-            }
-          : prev.routeSummary,
-      };
-    });
+    setResult(prev => (prev ? { ...prev, displayFilters, routeFocus } : prev));
   }, [displayFilters, routeFocus]);
 
   const encodeImages = async (images: File[]) =>
@@ -68,19 +50,14 @@ const App: React.FC = () => {
     );
 
   const applyResult = (nextResult: OptimizationResult) => {
+    const selectedRouteId = routeFocus.selectedRouteId ?? nextResult.optimizedRoutes?.[0]?.routeId;
     setResult({
       ...nextResult,
       displayFilters,
-      routeFocus,
-      routeSummary: nextResult.routeSummary
-        ? {
-            ...nextResult.routeSummary,
-            selectedStopEtaMin:
-              routeFocus.selectedLegIndex !== undefined && nextResult.optimizedRoad
-                ? +((nextResult.optimizedRoad.durationMin / Math.max(nextResult.optimizedPath.length - 1, 1)) * (routeFocus.selectedLegIndex + 1)).toFixed(1)
-                : nextResult.routeSummary.selectedStopEtaMin,
-          }
-        : nextResult.routeSummary,
+      routeFocus: {
+        ...routeFocus,
+        selectedRouteId,
+      },
     });
     setStatus(ProcessingStatus.COMPLETE);
     setHistory(prev => [
@@ -89,6 +66,7 @@ const App: React.FC = () => {
         improvement: nextResult.metrics.improvement,
         baseline: nextResult.metrics.baseline.distance,
         optimized: nextResult.metrics.optimized.distance,
+        vehicles: nextResult.fleetConfig?.vehicleCount ?? nextResult.optimizedRoutes.length,
       },
       ...prev,
     ].slice(0, 6));
@@ -98,7 +76,8 @@ const App: React.FC = () => {
     stopsInput: string,
     images: File[],
     preferences?: { weightTime?: number; weightEmissions?: number; weightDistance?: number },
-    optimization?: { mode?: 'fast' | 'quality'; timeBudgetMs?: number; baselineMode?: 'dynamic' | 'distance' }
+    optimization?: { mode?: 'fast' | 'quality'; timeBudgetMs?: number; baselineMode?: 'dynamic' | 'distance' },
+    fleet?: FleetConfig
   ) => {
     setStatus(ProcessingStatus.ANALYZING);
     setErrorMessage(null);
@@ -111,6 +90,7 @@ const App: React.FC = () => {
         images: encodedImages,
         preferences,
         optimization,
+        fleet,
       });
       applyResult(apiResult);
     } catch (error: any) {
@@ -120,7 +100,7 @@ const App: React.FC = () => {
     }
   };
 
-  const handleReroute = async (overrides: { geofences?: Geofence[]; manualRouteOrder?: string[] }) => {
+  const handleReroute = async (overrides: { geofences?: Geofence[] }) => {
     if (!result) return;
     setStatus(ProcessingStatus.OPTIMIZING);
     setErrorMessage(null);
@@ -129,7 +109,6 @@ const App: React.FC = () => {
       const nextResult = await rerouteViaApi({
         result,
         geofences: overrides.geofences ?? result.geofences,
-        manualRouteOrder: overrides.manualRouteOrder,
       });
       applyResult(nextResult);
     } catch (error: any) {
@@ -144,9 +123,7 @@ const App: React.FC = () => {
       <div className="w-[380px] lg:w-[32%] min-w-[320px] flex-shrink-0 z-10 shadow-2xl">
         <Sidebar
           onOptimize={handleOptimization}
-          onApplyManualOrder={manualRouteOrder => handleReroute({ manualRouteOrder })}
-          onClearManualOverride={() => handleReroute({ manualRouteOrder: undefined })}
-          onSelectStop={selectedStopId => setRouteFocus(prev => ({ ...prev, selectedStopId }))}
+          onSelectRoute={selectedRouteId => setRouteFocus(prev => ({ ...prev, selectedRouteId, fitToActiveRoute: true }))}
           status={status}
           result={result}
           history={history}
@@ -155,13 +132,13 @@ const App: React.FC = () => {
         />
       </div>
 
-      <div className="flex-1 flex flex-col h-full relative">
-        <div className="flex-1 p-6 relative">
-          <div className="h-full w-full rounded-xl overflow-hidden shadow-2xl border border-slate-800/50 bg-slate-900/50 backdrop-blur-sm">
+      <div className="relative flex h-full flex-1 flex-col">
+        <div className="relative flex-1 p-4">
+          <div className="h-full w-full overflow-hidden rounded-xl border border-slate-800/50 bg-slate-900/50 shadow-2xl backdrop-blur-sm">
             <MapVisualization
               data={result}
               loading={status !== ProcessingStatus.IDLE && status !== ProcessingStatus.COMPLETE && status !== ProcessingStatus.ERROR}
-              onGeofencesChange={geofences => handleReroute({ geofences, manualRouteOrder: result?.manualRouteOrder })}
+              onGeofencesChange={geofences => handleReroute({ geofences })}
               filters={displayFilters}
               focus={routeFocus}
               onFiltersChange={setDisplayFilters}
@@ -169,24 +146,45 @@ const App: React.FC = () => {
             />
           </div>
 
-          <div className="absolute top-10 left-10 bg-slate-900/80 backdrop-blur border border-slate-700 px-3 py-1 rounded text-xs font-mono text-slate-400">
+          <div className="absolute left-8 top-8 rounded border border-slate-700 bg-slate-900/80 px-3 py-1 text-xs font-mono text-slate-400 backdrop-blur">
             FRAMEWORK: <span className="text-blue-400">SPATIAL-REASONING</span>
           </div>
-        </div>
-
-        <div className="h-[180px] min-h-[180px] bg-slate-900 border-t border-slate-800 p-6 z-20 shadow-[0_-10px_40px_-15px_rgba(0,0,0,0.3)]">
-          <h2 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4">Performance Metrics</h2>
-          {result && result.metrics ? (
-            <MetricsDashboard
-              baseline={result.metrics.baseline}
-              optimized={result.metrics.optimized}
-              improvement={result.metrics.improvement}
-            />
-          ) : (
-            <div className="flex items-center justify-center h-24 border border-dashed border-slate-800 rounded-lg text-slate-600 text-sm font-mono">
-              {status === ProcessingStatus.COMPLETE ? 'Metrics unavailable' : 'Waiting for optimization results...'}
-            </div>
-          )}
+          <div className="pointer-events-none absolute inset-x-6 bottom-6 z-30">
+            {result && result.metrics ? (
+              <div className="pointer-events-auto rounded-2xl border border-slate-800 bg-slate-900 p-4 shadow-[0_20px_60px_-25px_rgba(0,0,0,0.75)]">
+                <div className="mb-3 flex items-center justify-between">
+                  <div className="text-xs font-bold uppercase tracking-wider text-slate-500">Performance Metrics</div>
+                  <button
+                    type="button"
+                    className="rounded border border-slate-700 px-2 py-1 text-[10px] font-mono text-slate-300 hover:bg-slate-800"
+                    onClick={() => setMetricsCollapsed(prev => !prev)}
+                  >
+                    {metricsCollapsed ? 'Open' : 'Min'}
+                  </button>
+                </div>
+                {metricsCollapsed ? (
+                  <div className="flex flex-wrap items-center gap-4 text-sm font-mono text-slate-300">
+                    <span>{result.comparison?.headline ?? 'Fleet metrics ready'}</span>
+                    <span className="text-slate-500">Distance {result.metrics.optimized.distance.toFixed(1)} km</span>
+                    <span className="text-slate-500">Time {result.metrics.optimized.time.toFixed(1)} min</span>
+                    <span className="text-slate-500">{result.optimizedRoutes.length} routes</span>
+                  </div>
+                ) : (
+                  <MetricsDashboard
+                    baseline={result.metrics.baseline}
+                    optimized={result.metrics.optimized}
+                    improvement={result.metrics.improvement}
+                    comparison={result.comparison}
+                    routeCount={result.optimizedRoutes.length}
+                  />
+                )}
+              </div>
+            ) : status !== ProcessingStatus.IDLE ? (
+              <div className="pointer-events-auto flex h-24 items-center justify-center rounded-2xl border border-dashed border-slate-800 bg-slate-900 text-sm font-mono text-slate-600">
+                {status === ProcessingStatus.COMPLETE ? 'Metrics unavailable' : 'Waiting for optimization results...'}
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
     </div>

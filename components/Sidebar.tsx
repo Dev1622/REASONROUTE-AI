@@ -1,22 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Download, FileJson, GripVertical, Play, Terminal, Upload, X } from 'lucide-react';
+import { AlertCircle, Download, FileJson, Play, Terminal, Upload, X } from 'lucide-react';
 import clsx from 'clsx';
 import * as XLSX from 'xlsx';
-import { AppConfigStatus, OptimizationResult, ProcessingStatus } from '../types';
+import { AppConfigStatus, FleetConfig, FleetRoutePlan, OptimizationResult, ProcessingStatus } from '../types';
 
 interface SidebarProps {
   onOptimize: (
     stops: string,
     images: File[],
     preferences?: { weightTime?: number; weightEmissions?: number; weightDistance?: number },
-    optimization?: { mode?: 'fast' | 'quality'; timeBudgetMs?: number; baselineMode?: 'dynamic' | 'distance' }
+    optimization?: { mode?: 'fast' | 'quality'; timeBudgetMs?: number; baselineMode?: 'dynamic' | 'distance' },
+    fleet?: FleetConfig
   ) => void;
-  onApplyManualOrder: (manualRouteOrder: string[]) => void;
-  onClearManualOverride: () => void;
-  onSelectStop: (selectedStopId?: string) => void;
+  onSelectRoute: (routeId?: string) => void;
   status: ProcessingStatus;
   result: OptimizationResult | null;
-  history: { ts: string; improvement: { distancePct: number; timePct: number; emissionsPct: number }; baseline: number; optimized: number }[];
+  history: { ts: string; improvement: { distancePct: number; timePct: number; emissionsPct: number }; baseline: number; optimized: number; vehicles: number }[];
   errorMessage?: string | null;
   configStatus: AppConfigStatus | null;
 }
@@ -46,152 +45,127 @@ Clinic, 35, 35`,
   },
 ];
 
-function buildManualList(result: OptimizationResult): string[] {
-  const path = result.manualRouteOrder?.length ? result.manualRouteOrder : result.optimizedPath;
-  if (path.length >= 2 && path[0] === path[path.length - 1]) {
-    return path.slice(1, -1);
-  }
-  return path.slice(1);
+function downloadText(filename: string, content: string, mimeType: string) {
+  const anchor = document.createElement('a');
+  anchor.href = `data:${mimeType};charset=utf-8,${encodeURIComponent(content)}`;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
 }
 
-const Sidebar: React.FC<SidebarProps> = ({
-  onOptimize,
-  onApplyManualOrder,
-  onClearManualOverride,
-  onSelectStop,
-  status,
-  result,
-  history,
-  errorMessage,
-  configStatus,
-}) => {
+function routeFeature(result: OptimizationResult, route: FleetRoutePlan, collection: 'baseline' | 'optimized') {
+  const nodeMap = new Map(result.nodes.map(node => [node.id, node]));
+  return {
+    type: 'Feature',
+    properties: { collection, routeId: route.routeId, vehicleLabel: route.vehicleLabel, source: route.road?.source ?? 'node-order' },
+    geometry: {
+      type: 'LineString',
+      coordinates: (route.road?.coordinates?.length
+        ? route.road.coordinates.map(([lat, lng]) => [lng, lat])
+        : route.path
+            .map(id => nodeMap.get(id))
+            .filter(Boolean)
+            .map(node => (result.coordinateMode === 'geo' && typeof node!.lat === 'number' && typeof node!.lng === 'number' ? [node!.lng, node!.lat] : [node!.x, node!.y]))) as number[][],
+    },
+  };
+}
+
+function buildFleetSummary(result: OptimizationResult) {
+  return {
+    generatedAt: new Date().toISOString(),
+    fleetConfig: result.fleetConfig,
+    comparison: result.comparison,
+    metrics: result.metrics,
+    diagnostics: result.diagnostics,
+    optimizedRoutes: result.optimizedRoutes.map(route => ({ vehicleLabel: route.vehicleLabel, metrics: route.metrics, summary: route.summary })),
+    baselineRoutes: result.baselineRoutes.map(route => ({ vehicleLabel: route.vehicleLabel, metrics: route.metrics, summary: route.summary })),
+  };
+}
+
+function buildFleetSummaryHtml(result: OptimizationResult) {
+  const rows = result.optimizedRoutes
+    .map(route => `<tr><td>${route.vehicleLabel}</td><td>${route.summary.stopCount ?? 0}</td><td>${route.metrics.distance.toFixed(2)} km</td><td>${route.metrics.time.toFixed(1)} min</td><td>${route.metrics.emissions.toFixed(3)} kg</td></tr>`)
+    .join('');
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>Fleet Summary</title><style>body{font-family:Arial,sans-serif;margin:24px;color:#0f172a}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;text-align:left}th{background:#e2e8f0}.cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0}.card{border:1px solid #cbd5e1;border-radius:10px;padding:12px;background:#f8fafc}</style></head><body><h1>${result.comparison?.headline ?? 'Fleet Summary'}</h1><p>${result.comparison?.detail ?? ''}</p><div class="cards"><div class="card"><strong>Vehicles</strong><br/>${result.fleetConfig?.vehicleCount ?? result.optimizedRoutes.length}</div><div class="card"><strong>Distance</strong><br/>${result.metrics.optimized.distance.toFixed(2)} km</div><div class="card"><strong>Time</strong><br/>${result.metrics.optimized.time.toFixed(1)} min</div><div class="card"><strong>Gain</strong><br/>${result.metrics.improvement.timePct}% time</div></div><table><thead><tr><th>Vehicle</th><th>Stops</th><th>Distance</th><th>Time</th><th>Emissions</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
+}
+
+function buildVehicleManifest(result: OptimizationResult, route: FleetRoutePlan) {
+  const nodeMap = new Map(result.nodes.map(node => [node.id, node]));
+  return {
+    generatedAt: new Date().toISOString(),
+    vehicleLabel: route.vehicleLabel,
+    routeId: route.routeId,
+    metrics: route.metrics,
+    summary: route.summary,
+    diagnostics: {
+      source: route.road?.source ?? result.diagnostics?.provider ?? 'unknown',
+      cacheStatus: route.road?.cacheStatus ?? 'none',
+      fallbackLegCount: route.road?.fallbackLegCount ?? 0,
+      warnings: route.warnings ?? [],
+    },
+    stops: route.path.map((id, index) => {
+      const node = nodeMap.get(id);
+      return { sequence: index + 1, id, label: node?.label ?? id, type: node?.type ?? 'stop', lat: node?.lat, lng: node?.lng };
+    }),
+  };
+}
+
+const RouteCard: React.FC<{ route: FleetRoutePlan; selected: boolean; tone: 'baseline' | 'optimized'; onClick: () => void }> = ({ route, selected, tone, onClick }) => {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={clsx(
+        'w-full rounded border px-3 py-3 text-left text-[11px] transition-colors',
+        selected
+          ? tone === 'optimized'
+            ? 'border-emerald-500/40 bg-emerald-950/15'
+            : 'border-amber-500/40 bg-amber-950/15'
+          : 'border-slate-800 bg-slate-950/60 hover:border-slate-700'
+      )}
+    >
+      <div className="mb-1 flex items-center justify-between">
+        <span className="font-semibold text-slate-200">{route.vehicleLabel}</span>
+        <span className="text-slate-500">{route.summary.stopCount ?? 0} stops</span>
+      </div>
+      <div className="grid grid-cols-3 gap-2 text-slate-400">
+        <div>{route.metrics.distance.toFixed(1)} km</div>
+        <div>{route.metrics.time.toFixed(1)} min</div>
+        <div>{route.metrics.emissions.toFixed(2)} kg</div>
+      </div>
+      <div className="mt-2 truncate text-slate-500">{route.summary.firstStopLabel} to {route.summary.lastStopLabel}</div>
+    </button>
+  );
+};
+
+const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onSelectRoute, status, result, history, errorMessage, configStatus }) => {
   const [stops, setStops] = useState(SAMPLE_SCENARIOS[0].value);
   const [images, setImages] = useState<File[]>([]);
   const [jsonFileName, setJsonFileName] = useState<string | null>(null);
   const [sheetFileName, setSheetFileName] = useState<string | null>(null);
-  const [weights, setWeights] = useState({
-    weightTime: 0.5,
-    weightEmissions: 0.3,
-    weightDistance: 0.2,
-  });
-  const [optimization, setOptimization] = useState<{ mode: 'fast' | 'quality'; timeBudgetMs: number }>({
-    mode: 'fast',
-    timeBudgetMs: 40,
-  });
+  const [weights, setWeights] = useState({ weightTime: 0.5, weightEmissions: 0.3, weightDistance: 0.2 });
+  const [optimization, setOptimization] = useState<{ mode: 'fast' | 'quality'; timeBudgetMs: number }>({ mode: 'fast', timeBudgetMs: 40 });
   const [baselineMode, setBaselineMode] = useState<'dynamic' | 'distance'>('dynamic');
+  const [vehicleCount, setVehicleCount] = useState(3);
+  const [vehicleNames, setVehicleNames] = useState('Vehicle 1, Vehicle 2, Vehicle 3');
   const [showDebugLogs, setShowDebugLogs] = useState(false);
   const [healthCollapsed, setHealthCollapsed] = useState(false);
-  const [manualStops, setManualStops] = useState<string[]>([]);
-  const [draggedStopId, setDraggedStopId] = useState<string | null>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (logContainerRef.current) {
-      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
-    }
+    if (logContainerRef.current) logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
   }, [result?.logs, status]);
 
   useEffect(() => {
-    if (result) {
-      setManualStops(buildManualList(result));
+    if (result?.fleetConfig) {
+      setVehicleCount(result.fleetConfig.vehicleCount);
+      setVehicleNames((result.fleetConfig.vehicleLabels ?? []).join(', '));
     }
-  }, [result]);
+  }, [result?.fleetConfig]);
 
-  const isProcessing =
-    status !== ProcessingStatus.IDLE &&
-    status !== ProcessingStatus.COMPLETE &&
-    status !== ProcessingStatus.ERROR;
-
-  const nodeMap = useMemo(() => new Map(result?.nodes.map(node => [node.id, node]) ?? []), [result]);
-  const activePath = result?.activeRouteLabel === 'manual' && result.manualRouteOrder?.length ? result.manualRouteOrder : result?.optimizedPath ?? [];
-
-  const buildDriverManifest = () => {
-    if (!result) return null;
-    const stopsInOrder = activePath.map((id, index) => {
-      const node = nodeMap.get(id);
-      return {
-        sequence: index + 1,
-        id,
-        label: node?.label ?? id,
-        type: node?.type ?? 'stop',
-        lat: typeof node?.lat === 'number' ? node.lat : undefined,
-        lng: typeof node?.lng === 'number' ? node.lng : undefined,
-      };
-    });
-
-    return {
-      generatedAt: new Date().toISOString(),
-      routeLabel: result.activeRouteLabel === 'manual' ? 'dispatcher_override' : 'optimized',
-      coordinateMode: result.coordinateMode,
-      routingProvider: result.diagnostics?.provider ?? result.optimizedRoad?.source ?? 'unknown',
-      trafficMode: result.diagnostics?.trafficMode ?? 'freeflow',
-      metrics: result.metrics.optimized,
-      diagnostics: result.diagnostics,
-      warnings: result.routeWarnings ?? [],
-      blockedRoads: (result.geofences ?? [])
-        .filter(geofence => geofence.kind === 'road_block' && geofence.roadSegment)
-        .map(geofence => ({
-          label: geofence.label,
-          start: geofence.roadSegment!.start,
-          end: geofence.roadSegment!.end,
-          pathPointCount: geofence.roadSegment!.path.length,
-        })),
-      stops: stopsInOrder,
-    };
-  };
-
-  const buildDriverManifestHtml = () => {
-    const manifest = buildDriverManifest();
-    if (!manifest) return null;
-    const stopRows = manifest.stops
-      .map(
-        stop => `<tr><td>${stop.sequence}</td><td>${stop.label}</td><td>${stop.type}</td><td>${stop.lat ?? '-'}</td><td>${stop.lng ?? '-'}</td></tr>`
-      )
-      .join('');
-    const warningRows = (manifest.warnings.length ? manifest.warnings : ['No active routing warnings.'])
-      .map(warning => `<li>${warning}</li>`)
-      .join('');
-    const blockRows = (manifest.blockedRoads.length ? manifest.blockedRoads : [])
-      .map(block => `<li>${block.label}: ${block.pathPointCount} routed points blocked</li>`)
-      .join('');
-
-    return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ReasonRoute Driver Manifest</title>
-  <style>
-    body { font-family: Arial, sans-serif; margin: 24px; color: #0f172a; }
-    h1, h2 { margin-bottom: 8px; }
-    .meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 20px; }
-    .card { border: 1px solid #cbd5e1; border-radius: 10px; padding: 12px; background: #f8fafc; }
-    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    th, td { border: 1px solid #cbd5e1; padding: 8px; text-align: left; font-size: 14px; }
-    th { background: #e2e8f0; }
-    ul { margin-top: 8px; }
-  </style>
-</head>
-<body>
-  <h1>Driver Manifest</h1>
-  <div>Generated: ${manifest.generatedAt}</div>
-  <div class="meta">
-    <div class="card"><strong>Route</strong><br/>${manifest.routeLabel}</div>
-    <div class="card"><strong>Routing Provider</strong><br/>${manifest.routingProvider}</div>
-    <div class="card"><strong>Traffic Mode</strong><br/>${manifest.trafficMode}</div>
-    <div class="card"><strong>Distance / Time</strong><br/>${manifest.metrics.distance.toFixed(2)} km / ${manifest.metrics.time.toFixed(1)} min</div>
-  </div>
-  <h2>Stop Order</h2>
-  <table>
-    <thead><tr><th>#</th><th>Stop</th><th>Type</th><th>Lat</th><th>Lng</th></tr></thead>
-    <tbody>${stopRows}</tbody>
-  </table>
-  <h2>Warnings</h2>
-  <ul>${warningRows}</ul>
-  ${blockRows ? `<h2>Blocked Roads</h2><ul>${blockRows}</ul>` : ''}
-</body>
-</html>`;
-  };
+  const isProcessing = ![ProcessingStatus.IDLE, ProcessingStatus.COMPLETE, ProcessingStatus.ERROR].includes(status);
+  const parsedVehicleLabels = useMemo(() => vehicleNames.split(',').map(label => label.trim()).filter(Boolean).slice(0, vehicleCount), [vehicleNames, vehicleCount]);
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
@@ -203,32 +177,14 @@ const Sidebar: React.FC<SidebarProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
     setJsonFileName(file.name);
-
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const raw = reader.result as string;
-        const parsed = JSON.parse(raw);
-        const nodeToCSV = (node: any) => {
-          const label = node.label ?? node.name ?? node.id ?? 'Stop';
-          if (typeof node.lat === 'number' && typeof node.lng === 'number') {
-            return `${label}, ${node.lat}, ${node.lng}`;
-          }
-          if (typeof node.x === 'number' && typeof node.y === 'number') {
-            return `${label}, ${node.x}, ${node.y}`;
-          }
-          return String(label);
-        };
-
-        if (Array.isArray(parsed)) {
-          setStops(parsed.map(item => (typeof item === 'string' ? item : nodeToCSV(item))).join('\n'));
-          return;
-        }
-        if (parsed && Array.isArray(parsed.nodes)) {
-          setStops(parsed.nodes.map(nodeToCSV).join('\n'));
-          return;
-        }
-        setStops(JSON.stringify(parsed, null, 2));
+        const parsed = JSON.parse(reader.result as string);
+        const toLine = (node: any) => `${node.label ?? node.name ?? node.id ?? 'Stop'}, ${node.lat ?? node.x ?? ''}, ${node.lng ?? node.y ?? ''}`;
+        if (Array.isArray(parsed)) setStops(parsed.map(item => (typeof item === 'string' ? item : toLine(item))).join('\n'));
+        else if (parsed && Array.isArray(parsed.nodes)) setStops(parsed.nodes.map(toLine).join('\n'));
+        else setStops(JSON.stringify(parsed, null, 2));
       } catch {
         setStops(reader.result as string);
       }
@@ -237,563 +193,201 @@ const Sidebar: React.FC<SidebarProps> = ({
     e.target.value = '';
   };
 
-  const sheetRowsToStops = (rows: unknown[][]) => {
-    const cleanedRows = rows
-      .map(row => (Array.isArray(row) ? row.map(cell => (cell ?? '').toString().trim()) : []))
-      .filter(row => row.some(cell => cell.length > 0));
-    if (cleanedRows.length === 0) {
-      throw new Error('The uploaded sheet did not contain any stop rows.');
-    }
-
-    const maybeHeader = cleanedRows[0].map(cell => cell.toLowerCase());
+  const rowsToStops = (rows: unknown[][]) => {
+    const cleaned = rows.map(row => (Array.isArray(row) ? row.map(cell => (cell ?? '').toString().trim()) : [])).filter(row => row.some(Boolean));
+    const maybeHeader = cleaned[0].map(cell => cell.toLowerCase());
     const hasHeader = maybeHeader.some(cell => ['label', 'stop', 'name', 'lat', 'lng', 'lon', 'longitude'].includes(cell));
-    const rowsWithoutHeader = hasHeader ? cleanedRows.slice(1) : cleanedRows;
+    const body = hasHeader ? cleaned.slice(1) : cleaned;
     const labelIndex = hasHeader ? maybeHeader.findIndex(cell => ['label', 'stop', 'name'].includes(cell)) : 0;
     const latIndex = hasHeader ? maybeHeader.findIndex(cell => cell === 'lat' || cell === 'latitude') : 1;
     const lngIndex = hasHeader ? maybeHeader.findIndex(cell => ['lng', 'lon', 'longitude'].includes(cell)) : 2;
-
-    if (latIndex < 0 || lngIndex < 0) {
-      throw new Error('The sheet needs latitude and longitude columns.');
-    }
-
-    const lines = rowsWithoutHeader
-      .map((row, index) => {
-        const label = row[labelIndex] || `Stop ${index + 1}`;
-        const lat = row[latIndex];
-        const lng = row[lngIndex];
-        return `${label}, ${lat}, ${lng}`;
-      })
-      .filter(line => !/,\s*,\s*$/.test(line));
-
-    if (lines.length === 0) {
-      throw new Error('No valid stop rows were found in the uploaded sheet.');
-    }
-
-    return lines.join('\n');
+    if (latIndex < 0 || lngIndex < 0) throw new Error('The sheet needs latitude and longitude columns.');
+    return body.map((row, index) => `${row[labelIndex] || `Stop ${index + 1}`}, ${row[latIndex]}, ${row[lngIndex]}`).join('\n');
   };
 
   const handleSheetUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setSheetFileName(file.name);
-
     try {
-      if (file.name.toLowerCase().endsWith('.csv')) {
-        const text = await file.text();
-        const workbook = XLSX.read(text, { type: 'string' });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false }) as unknown[][];
-        setStops(sheetRowsToStops(rows));
-      } else {
-        const buffer = await file.arrayBuffer();
-        const workbook = XLSX.read(buffer, { type: 'array' });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false }) as unknown[][];
-        setStops(sheetRowsToStops(rows));
-      }
+      const source = file.name.toLowerCase().endsWith('.csv') ? await file.text() : await file.arrayBuffer();
+      const workbook = XLSX.read(source, { type: typeof source === 'string' ? 'string' : 'array' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false }) as unknown[][];
+      setStops(rowsToStops(rows));
     } catch (error: any) {
       console.error(error);
-      setStops('');
       alert(error?.message ?? 'Spreadsheet import failed.');
     } finally {
       e.target.value = '';
     }
   };
 
-  const reorderManualStop = (sourceId: string, targetId: string) => {
-    setManualStops(prev => {
-      const sourceIndex = prev.indexOf(sourceId);
-      const targetIndex = prev.indexOf(targetId);
-      if (sourceIndex === -1 || targetIndex === -1 || sourceIndex === targetIndex) return prev;
-      const copy = [...prev];
-      const [moved] = copy.splice(sourceIndex, 1);
-      copy.splice(targetIndex, 0, moved);
-      return copy;
-    });
-  };
-
-  const applyManualOrder = () => {
-    if (!result || manualStops.length === 0) return;
-    const basePath = result.aiOptimizedPath ?? result.optimizedPath;
-    const depotStart = basePath[0];
-    const depotEnd = basePath[basePath.length - 1] === depotStart ? basePath[basePath.length - 1] : undefined;
-    const manualRouteOrder = depotEnd
-      ? [depotStart, ...manualStops, depotEnd]
-      : [depotStart, ...manualStops];
-    onApplyManualOrder(manualRouteOrder);
-  };
-
-  const handleExport = () => {
-    const manifest = buildDriverManifest();
-    if (!manifest) return;
-    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(manifest, null, 2));
-    const anchor = document.createElement('a');
-    anchor.setAttribute('href', dataStr);
-    anchor.setAttribute('download', 'Driver_Manifest.json');
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-  };
-
-  const handleExportDriverPack = () => {
-    const html = buildDriverManifestHtml();
-    if (!html) return;
-    const dataStr = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
-    const anchor = document.createElement('a');
-    anchor.setAttribute('href', dataStr);
-    anchor.setAttribute('download', 'Driver_Manifest.html');
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-  };
-
-  const handleExportGeojson = () => {
-    if (!result) return;
-    const featureForRoad = (label: string, road: OptimizationResult['baselineRoad']) =>
-      road?.coordinates?.length
-        ? {
-            type: 'Feature',
-            properties: { label, source: road.source },
-            geometry: {
-              type: 'LineString',
-              coordinates: road.coordinates.map(([lat, lng]) => [lng, lat]),
-            },
-          }
-        : null;
-
-    const fallbackFeature = (path: string[], label: string) => ({
-      type: 'Feature',
-      properties: { label, source: 'node-order' },
-      geometry: {
-        type: 'LineString',
-        coordinates: path
-          .map(id => nodeMap.get(id))
-          .filter(Boolean)
-          .map(node =>
-            result.coordinateMode === 'geo' && typeof node!.lng === 'number' && typeof node!.lat === 'number'
-              ? [node!.lng, node!.lat]
-              : [node!.x, node!.y]
-          ),
-      },
-    });
-
-    const geojson = {
-      type: 'FeatureCollection',
-      features: [
-        featureForRoad('baseline', result.baselineRoad) ?? fallbackFeature(result.baselinePath, 'baseline'),
-        featureForRoad(result.activeRouteLabel === 'manual' ? 'manual' : 'optimized', result.optimizedRoad) ??
-          fallbackFeature(result.optimizedPath, result.activeRouteLabel === 'manual' ? 'manual' : 'optimized'),
-      ],
-    };
-
-    const dataStr = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(geojson, null, 2));
-    const anchor = document.createElement('a');
-    anchor.setAttribute('href', dataStr);
-    anchor.setAttribute('download', 'Driver_Route.geojson');
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-  };
+  const exportFleetJson = () => result && downloadText('Fleet_Summary.json', JSON.stringify(buildFleetSummary(result), null, 2), 'application/json');
+  const exportFleetHtml = () => result && downloadText('Fleet_Summary.html', buildFleetSummaryHtml(result), 'text/html');
+  const exportVehicleManifests = () => result && result.optimizedRoutes.forEach(route => downloadText(`${route.vehicleLabel.replace(/\s+/g, '_')}_Manifest.json`, JSON.stringify(buildVehicleManifest(result, route), null, 2), 'application/json'));
+  const exportGeojson = () => result && downloadText('Fleet_Routes.geojson', JSON.stringify({ type: 'FeatureCollection', features: [...result.baselineRoutes.map(route => routeFeature(result, route, 'baseline')), ...result.optimizedRoutes.map(route => routeFeature(result, route, 'optimized'))] }, null, 2), 'application/json');
 
   return (
-    <div className="flex flex-col h-full bg-slate-900 border-r border-slate-800 text-slate-300">
-      <div className="p-6 border-b border-slate-800">
-        <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent">
-          ReasonRoute AI
-        </h1>
-        <p className="text-xs text-slate-500 font-mono mt-1">SPATIAL-REASONING ENGINE v2.5</p>
+    <div className="flex h-full flex-col border-r border-slate-800 bg-slate-900 text-slate-300">
+      <div className="border-b border-slate-800 p-6">
+        <h1 className="bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-2xl font-bold text-transparent">ReasonRoute AI</h1>
+        <p className="mt-1 font-mono text-xs text-slate-500">FLEET PLANNER v3.0</p>
       </div>
-
-      <div className="flex-1 overflow-y-auto p-6 space-y-6">
-        <div className="space-y-4">
-          <div className={`rounded-md border px-3 py-3 text-xs ${configStatus?.ready ? 'border-emerald-500/30 bg-emerald-950/15 text-emerald-200' : 'border-amber-500/30 bg-amber-950/20 text-amber-200'}`}>
-            <div className="flex items-center justify-between">
-              <div className="font-bold uppercase tracking-wider">Pilot Health</div>
-              <div className="flex items-center gap-2">
-                <div>{configStatus?.trafficModeReady ? 'Traffic mode ready' : 'OSRM fallback'}</div>
-                <button
-                  type="button"
-                  className="rounded border border-slate-700 px-2 py-1 text-[10px] hover:bg-slate-800"
-                  onClick={() => setHealthCollapsed(prev => !prev)}
-                >
-                  {healthCollapsed ? 'Open' : 'Min'}
-                </button>
-              </div>
-            </div>
-            {healthCollapsed ? null : (
-              <>
-                <div className="mt-2 space-y-1 text-[11px]">
-                  <div className="flex justify-between"><span className="text-slate-400">Routing provider</span><span>{configStatus?.routingProvider ?? 'unknown'}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-400">Mapbox</span><span>{configStatus?.mapboxConfigured ? 'configured' : 'missing'}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-400">Gemini</span><span>{configStatus?.geminiConfigured ? 'configured' : 'missing'}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-400">Historical replay</span><span>{configStatus?.historicalReplayReady ? 'ready' : 'optional'}</span></div>
-                </div>
-                {configStatus?.notes?.length ? (
-                  <div className="mt-2 space-y-1 text-[11px]">
-                    {configStatus.notes.map((note, index) => <div key={index}>{note}</div>)}
-                  </div>
-                ) : null}
-              </>
-            )}
+      <div className="flex-1 space-y-6 overflow-y-auto p-6">
+        <div className={`rounded-md border px-3 py-3 text-xs ${configStatus?.ready ? 'border-emerald-500/30 bg-emerald-950/15 text-emerald-200' : 'border-amber-500/30 bg-amber-950/20 text-amber-200'}`}>
+          <div className="flex items-center justify-between">
+            <div className="font-bold uppercase tracking-wider">Pilot Health</div>
+            <button type="button" className="rounded border border-slate-700 px-2 py-1 text-[10px] hover:bg-slate-800" onClick={() => setHealthCollapsed(prev => !prev)}>
+              {healthCollapsed ? 'Open' : 'Min'}
+            </button>
           </div>
-
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Delivery Stops</label>
-              <div className="flex items-center gap-2">
-                {SAMPLE_SCENARIOS.map(sample => (
-                  <button
-                    key={sample.label}
-                    type="button"
-                    className="text-[10px] font-mono px-2 py-1 rounded border border-slate-700 text-slate-400 hover:text-emerald-300 hover:border-emerald-500/40 transition-colors"
-                    onClick={() => setStops(sample.value)}
-                    disabled={isProcessing}
-                  >
-                    {sample.label}
-                  </button>
-                ))}
-                <label
-                  className={clsx(
-                    'flex items-center gap-1.5 text-[10px] font-mono px-2 py-1 rounded border cursor-pointer transition-colors select-none',
-                    isProcessing
-                      ? 'border-slate-800 text-slate-700 cursor-not-allowed'
-                      : 'border-slate-700 text-slate-400 hover:text-emerald-400 hover:border-emerald-500/50'
-                  )}
-                >
-                  <FileJson className="w-3 h-3 flex-shrink-0" />
-                  <span>{jsonFileName ? jsonFileName.slice(0, 14) : 'Upload JSON'}</span>
-                  <input
-                    type="file"
-                    className="hidden"
-                    accept=".json,application/json"
-                    onChange={handleJsonUpload}
-                    disabled={isProcessing}
-                  />
-                </label>
-                <label
-                  className={clsx(
-                    'flex items-center gap-1.5 text-[10px] font-mono px-2 py-1 rounded border cursor-pointer transition-colors select-none',
-                    isProcessing
-                      ? 'border-slate-800 text-slate-700 cursor-not-allowed'
-                      : 'border-slate-700 text-slate-400 hover:text-emerald-400 hover:border-emerald-500/50'
-                  )}
-                >
-                  <Upload className="w-3 h-3 flex-shrink-0" />
-                  <span>{sheetFileName ? sheetFileName.slice(0, 14) : 'Upload CSV/XLSX'}</span>
-                  <input
-                    type="file"
-                    className="hidden"
-                    accept=".csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
-                    onChange={handleSheetUpload}
-                    disabled={isProcessing}
-                  />
-                </label>
+          {healthCollapsed ? null : (
+            <>
+              <div className="mt-2 space-y-1 text-[11px]">
+                <div className="flex justify-between"><span className="text-slate-400">Routing provider</span><span>{configStatus?.routingProvider ?? 'unknown'}</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">Traffic mode</span><span>{configStatus?.trafficModeReady ? 'ready' : 'fallback'}</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">Mapbox</span><span>{configStatus?.mapboxConfigured ? 'configured' : 'missing'}</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">Gemini</span><span>{configStatus?.geminiConfigured ? 'configured' : 'missing'}</span></div>
               </div>
-            </div>
-            <textarea
-              className="w-full h-36 bg-slate-950 border border-slate-800 rounded-md p-3 text-sm font-mono focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 outline-none resize-none text-slate-300"
-              value={stops}
-              onChange={e => setStops(e.target.value)}
-              disabled={isProcessing}
-              placeholder={'One stop per line:\nLabel, lat, lng\nor\nLabel, x, y'}
-            />
-            <p className="mt-2 text-[11px] text-slate-500">Road routing is enabled only for valid `label, lat, lng` rows. First row should be the depot or warehouse. CSV/XLSX uploads should include label, lat, lng columns.</p>
-          </div>
-
-          {errorMessage && (
-            <div className="rounded-md border border-red-500/40 bg-red-950/20 px-3 py-2 text-xs text-red-300">
-              {errorMessage}
-            </div>
+              {configStatus?.notes?.map((note, index) => <div key={index} className="mt-1 text-[11px]">{note}</div>)}
+            </>
           )}
+        </div>
 
-          {result?.validation?.warnings?.length ? (
-            <div className="rounded-md border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-xs text-amber-200 space-y-1">
-              {result.validation.warnings.map((warning, index) => (
-                <div key={index}>{warning}</div>
+        <div>
+          <div className="mb-2 flex items-center justify-between">
+            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Delivery Stops</label>
+            <div className="flex items-center gap-2">
+              {SAMPLE_SCENARIOS.map(sample => (
+                <button key={sample.label} type="button" className="rounded border border-slate-700 px-2 py-1 font-mono text-[10px] text-slate-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-300" onClick={() => setStops(sample.value)} disabled={isProcessing}>
+                  {sample.label}
+                </button>
               ))}
-            </div>
-          ) : null}
-
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Preference Weights</label>
-              <span className="text-[10px] text-slate-500 font-mono">Time / Emissions / Distance</span>
-            </div>
-            {([
-              { key: 'weightTime', label: 'Time Priority' },
-              { key: 'weightEmissions', label: 'Emissions Priority' },
-              { key: 'weightDistance', label: 'Distance Priority' },
-            ] as const).map(({ key, label }) => (
-              <div key={key} className="flex items-center gap-3">
-                <span className="w-28 text-[11px] text-slate-400">{label}</span>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={weights[key]}
-                  onChange={e => setWeights(prev => ({ ...prev, [key]: Number(e.target.value) }))}
-                  disabled={isProcessing}
-                  className="flex-1 accent-emerald-500"
-                />
-                <span className="w-10 text-right text-[11px] font-mono text-slate-400">{weights[key].toFixed(2)}</span>
-              </div>
-            ))}
-          </div>
-
-          <div className="space-y-2 pt-2">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Optimization Mode</label>
-              <span className="text-[10px] text-slate-500 font-mono">{optimization.mode}</span>
-            </div>
-            <div className="flex items-center gap-2 text-[11px] text-slate-400">
-              <input
-                type="checkbox"
-                checked={optimization.mode === 'quality'}
-                onChange={e => setOptimization(prev => ({ ...prev, mode: e.target.checked ? 'quality' : 'fast' }))}
-                disabled={isProcessing}
-                className="accent-emerald-500"
-                id="quality-toggle"
-              />
-              <label htmlFor="quality-toggle" className="cursor-pointer">Enable quality search</label>
-            </div>
-            <div className="flex items-center gap-3">
-              <span className="w-24 text-[11px] text-slate-400">Time budget (ms)</span>
-              <input
-                type="range"
-                min={20}
-                max={250}
-                step={10}
-                value={optimization.timeBudgetMs}
-                onChange={e => setOptimization(prev => ({ ...prev, timeBudgetMs: Number(e.target.value) }))}
-                disabled={isProcessing}
-                className="flex-1 accent-emerald-500"
-              />
-              <span className="w-10 text-right text-[11px] font-mono text-slate-400">{optimization.timeBudgetMs}</span>
-            </div>
-            <div className="flex items-center gap-2 text-[11px] text-slate-400">
-              <input
-                type="checkbox"
-                checked={baselineMode === 'distance'}
-                onChange={e => setBaselineMode(e.target.checked ? 'distance' : 'dynamic')}
-                disabled={isProcessing}
-                className="accent-emerald-500"
-                id="baseline-toggle"
-              />
-              <label htmlFor="baseline-toggle" className="cursor-pointer">Fix baseline to distance-only</label>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Image Fallback</label>
-            <div className={clsx('border-2 border-dashed border-slate-800 rounded-md p-4 transition-colors', images.length ? 'bg-emerald-950/20 border-emerald-500/30' : 'hover:border-slate-600')}>
-              <label className="flex flex-col items-center cursor-pointer">
-                <Upload className={clsx('w-6 h-6 mb-2', images.length ? 'text-emerald-400' : 'text-slate-600')} />
-                <span className="text-xs text-slate-500">
-                  {images.length ? `${images.length} image${images.length > 1 ? 's' : ''} attached` : 'Upload traffic / incident image'}
-                </span>
-                <input
-                  type="file"
-                  className="hidden"
-                  onChange={handleImageChange}
-                  accept="image/*"
-                  multiple
-                  disabled={isProcessing}
-                />
+              <label className={clsx('flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1 font-mono text-[10px]', isProcessing ? 'border-slate-800 text-slate-700' : 'border-slate-700 text-slate-400 hover:border-emerald-500/50 hover:text-emerald-400')}>
+                <FileJson className="h-3 w-3" />
+                <span>{jsonFileName ? jsonFileName.slice(0, 14) : 'Upload JSON'}</span>
+                <input type="file" className="hidden" accept=".json,application/json" onChange={handleJsonUpload} disabled={isProcessing} />
+              </label>
+              <label className={clsx('flex cursor-pointer items-center gap-1.5 rounded border px-2 py-1 font-mono text-[10px]', isProcessing ? 'border-slate-800 text-slate-700' : 'border-slate-700 text-slate-400 hover:border-emerald-500/50 hover:text-emerald-400')}>
+                <Upload className="h-3 w-3" />
+                <span>{sheetFileName ? sheetFileName.slice(0, 14) : 'Upload CSV/XLSX'}</span>
+                <input type="file" className="hidden" accept=".csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv" onChange={handleSheetUpload} disabled={isProcessing} />
               </label>
             </div>
-            {images.length > 0 && (
-              <div className="mt-2 space-y-1">
-                {images.map((img, index) => (
-                  <div key={index} className="flex items-center justify-between text-[11px] bg-slate-950/60 border border-slate-800 rounded px-2 py-1">
-                    <span className="truncate mr-2">{img.name}</span>
-                    <button type="button" className="text-slate-500 hover:text-red-400" onClick={() => setImages(prev => prev.filter((_, i) => i !== index))}>
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
-
-          <button
-            onClick={() => onOptimize(stops, images, weights, { ...optimization, baselineMode })}
-            disabled={isProcessing || !stops.trim()}
-            className={clsx(
-              'w-full py-3 px-4 rounded-md flex items-center justify-center font-bold transition-all',
-              isProcessing ? 'bg-slate-800 text-slate-500 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/20'
-            )}
-          >
-            {isProcessing ? (
-              <span className="flex items-center">Processing...</span>
-            ) : (
-              <>
-                <Play className="w-4 h-4 mr-2" />
-                OPTIMIZE ROUTE
-              </>
-            )}
-          </button>
+          <textarea className="h-36 w-full resize-none rounded-md border border-slate-800 bg-slate-950 p-3 font-mono text-sm text-slate-300 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/50" value={stops} onChange={e => setStops(e.target.value)} disabled={isProcessing} />
+          <p className="mt-2 text-[11px] text-slate-500">First row should be the depot. Fleet planning splits the remaining stops across vehicles.</p>
         </div>
 
-        {result && result.coordinateMode === 'geo' && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Manual Route Override</label>
-              {result.overrideMode === 'manual_order' && (
-                <button type="button" className="text-[10px] font-mono text-amber-300 hover:text-amber-200" onClick={onClearManualOverride}>
-                  Clear override
-                </button>
-              )}
+        <div className="space-y-3 rounded-md border border-slate-800 bg-slate-950/40 p-3">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Fleet Setup</label>
+            <span className="font-mono text-[10px] text-slate-500">Single depot fleet</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="w-24 text-[11px] text-slate-400">Vehicle count</span>
+            <input type="range" min={2} max={5} step={1} value={vehicleCount} onChange={e => setVehicleCount(Number(e.target.value))} disabled={isProcessing} className="flex-1 accent-emerald-500" />
+            <span className="w-8 text-right font-mono text-[11px] text-slate-300">{vehicleCount}</span>
+          </div>
+          <input type="text" value={vehicleNames} onChange={e => setVehicleNames(e.target.value)} disabled={isProcessing} className="w-full rounded border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-emerald-500" placeholder="Vehicle 1, Vehicle 2, Vehicle 3" />
+        </div>
+
+        {errorMessage && <div className="rounded-md border border-red-500/40 bg-red-950/20 px-3 py-2 text-xs text-red-300">{errorMessage}</div>}
+        {result?.validation?.warnings?.length ? <div className="space-y-1 rounded-md border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">{result.validation.warnings.map((warning, index) => <div key={index}>{warning}</div>)}</div> : null}
+
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Preference Weights</label>
+            <span className="font-mono text-[10px] text-slate-500">Time / Emissions / Distance</span>
+          </div>
+          {([
+            { key: 'weightTime', label: 'Time Priority' },
+            { key: 'weightEmissions', label: 'Emissions Priority' },
+            { key: 'weightDistance', label: 'Distance Priority' },
+          ] as const).map(({ key, label }) => (
+            <div key={key} className="flex items-center gap-3">
+              <span className="w-28 text-[11px] text-slate-400">{label}</span>
+              <input type="range" min={0} max={1} step={0.05} value={weights[key]} onChange={e => setWeights(prev => ({ ...prev, [key]: Number(e.target.value) }))} disabled={isProcessing} className="flex-1 accent-emerald-500" />
+              <span className="w-10 text-right font-mono text-[11px] text-slate-400">{weights[key].toFixed(2)}</span>
             </div>
-            {result.routeSummary && (
-              <div className="grid grid-cols-2 gap-2 text-[11px]">
-                <div className="rounded border border-slate-800 bg-slate-950/60 px-2 py-2">
-                  <div className="text-slate-500">First stop</div>
-                  <div className="text-slate-200 truncate">{result.routeSummary.firstStopLabel}</div>
-                </div>
-                <div className="rounded border border-slate-800 bg-slate-950/60 px-2 py-2">
-                  <div className="text-slate-500">Last stop</div>
-                  <div className="text-slate-200 truncate">{result.routeSummary.lastStopLabel}</div>
-                </div>
-                <div className="rounded border border-slate-800 bg-slate-950/60 px-2 py-2">
-                  <div className="text-slate-500">Total legs</div>
-                  <div className="text-slate-200">{result.routeSummary.totalLegs}</div>
-                </div>
-                <div className="rounded border border-slate-800 bg-slate-950/60 px-2 py-2">
-                  <div className="text-slate-500">Longest leg</div>
-                  <div className="text-slate-200">{result.routeSummary.longestLegKm.toFixed(1)} km</div>
-                </div>
-              </div>
-            )}
-            <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
-              {manualStops.map((nodeId, index) => (
-                <div
-                  key={nodeId}
-                  draggable={!isProcessing}
-                  onDragStart={() => setDraggedStopId(nodeId)}
-                  onDragOver={event => event.preventDefault()}
-                  onDrop={() => {
-                    if (draggedStopId) reorderManualStop(draggedStopId, nodeId);
-                    setDraggedStopId(null);
-                  }}
-                  onDragEnd={() => setDraggedStopId(null)}
-                  onClick={() => onSelectStop(nodeId)}
-                  className={clsx(
-                    'flex items-center gap-2 rounded border px-2 py-2 text-[11px] cursor-pointer',
-                    result.routeFocus?.selectedStopId === nodeId
-                      ? 'border-emerald-500/50 bg-emerald-950/20'
-                      : 'border-slate-800 bg-slate-950/60'
-                  )}
-                >
-                  <GripVertical className="w-3 h-3 text-slate-500" />
-                  <div className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-800 text-[10px] font-bold text-slate-200">
-                    {index + 1}
-                  </div>
-                  <div className="flex-1 text-slate-300 truncate">{nodeMap.get(nodeId)?.label ?? nodeId}</div>
+          ))}
+        </div>
+
+        <div className="space-y-2 pt-2">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Optimization Mode</label>
+            <span className="font-mono text-[10px] text-slate-500">{optimization.mode}</span>
+          </div>
+          <div className="flex items-center gap-2 text-[11px] text-slate-400">
+            <input type="checkbox" checked={optimization.mode === 'quality'} onChange={e => setOptimization(prev => ({ ...prev, mode: e.target.checked ? 'quality' : 'fast' }))} disabled={isProcessing} className="accent-emerald-500" id="quality-toggle" />
+            <label htmlFor="quality-toggle" className="cursor-pointer">Enable quality search</label>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="w-24 text-[11px] text-slate-400">Time budget (ms)</span>
+            <input type="range" min={20} max={250} step={10} value={optimization.timeBudgetMs} onChange={e => setOptimization(prev => ({ ...prev, timeBudgetMs: Number(e.target.value) }))} disabled={isProcessing} className="flex-1 accent-emerald-500" />
+            <span className="w-10 text-right font-mono text-[11px] text-slate-400">{optimization.timeBudgetMs}</span>
+          </div>
+          <div className="flex items-center gap-2 text-[11px] text-slate-400">
+            <input type="checkbox" checked={baselineMode === 'distance'} onChange={e => setBaselineMode(e.target.checked ? 'distance' : 'dynamic')} disabled={isProcessing} className="accent-emerald-500" id="baseline-toggle" />
+            <label htmlFor="baseline-toggle" className="cursor-pointer">Fix baseline to distance-only</label>
+          </div>
+        </div>
+        <div>
+          <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Image Fallback</label>
+          <div className={clsx('rounded-md border-2 border-dashed border-slate-800 p-4 transition-colors', images.length ? 'border-emerald-500/30 bg-emerald-950/20' : 'hover:border-slate-600')}>
+            <label className="flex cursor-pointer flex-col items-center">
+              <Upload className={clsx('mb-2 h-6 w-6', images.length ? 'text-emerald-400' : 'text-slate-600')} />
+              <span className="text-xs text-slate-500">{images.length ? `${images.length} image${images.length > 1 ? 's' : ''} attached` : 'Upload traffic / incident image'}</span>
+              <input type="file" className="hidden" onChange={handleImageChange} accept="image/*" multiple disabled={isProcessing} />
+            </label>
+          </div>
+          {images.length > 0 && (
+            <div className="mt-2 space-y-1">
+              {images.map((img, index) => (
+                <div key={index} className="flex items-center justify-between rounded border border-slate-800 bg-slate-950/60 px-2 py-1 text-[11px]">
+                  <span className="mr-2 truncate">{img.name}</span>
+                  <button type="button" className="text-slate-500 hover:text-red-400" onClick={() => setImages(prev => prev.filter((_, i) => i !== index))}>
+                    <X className="h-3 w-3" />
+                  </button>
                 </div>
               ))}
             </div>
-            <button
-              type="button"
-              onClick={applyManualOrder}
-              disabled={isProcessing || !result}
-              className="w-full rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800"
-            >
-              Apply Manual Order
-            </button>
-          </div>
-        )}
-
-        {result?.routeWarnings?.length ? (
-          <div className="rounded-md border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-xs text-amber-200 space-y-1">
-            {result.routeWarnings.map((warning, index) => (
-              <div key={index} className="flex items-start gap-2">
-                <AlertCircle className="w-3 h-3 mt-0.5" />
-                <span>{warning}</span>
-              </div>
-            ))}
-          </div>
-        ) : null}
-
-        {result?.diagnostics && (
-            <div className="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px] space-y-1">
-              <div className="text-xs font-bold uppercase tracking-wider text-slate-500">Routing Diagnostics</div>
-              <div className="flex justify-between"><span className="text-slate-500">Provider</span><span>{result.diagnostics.provider ?? 'unknown'}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Traffic mode</span><span>{result.diagnostics.trafficMode ?? 'freeflow'}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Routing</span><span>{result.diagnostics.routingStatus}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Cache</span><span>{result.diagnostics.cacheStatus}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Fallback legs</span><span>{result.diagnostics.fallbackLegCount}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Geofence impact</span><span>{result.diagnostics.geofenceImpact}</span></div>
-            </div>
-        )}
-
-        <div className="flex flex-col h-64">
+          )}
+        </div>
+        <button onClick={() => onOptimize(stops, images, weights, { ...optimization, baselineMode }, { vehicleCount, vehicleLabels: parsedVehicleLabels })} disabled={isProcessing || !stops.trim()} className={clsx('flex w-full items-center justify-center rounded-md px-4 py-3 font-bold transition-all', isProcessing ? 'cursor-not-allowed bg-slate-800 text-slate-500' : 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/20 hover:bg-emerald-500')}>
+          {isProcessing ? <span className="flex items-center">Processing...</span> : <><Play className="mr-2 h-4 w-4" />PLAN FLEET</>}
+        </button>
+        {result?.comparison && <div className={clsx('rounded-md border px-3 py-3 text-xs', result.comparison.status === 'improved' ? 'border-emerald-500/30 bg-emerald-950/20 text-emerald-200' : result.comparison.status === 'worsened' ? 'border-red-500/30 bg-red-950/20 text-red-200' : 'border-amber-500/30 bg-amber-950/20 text-amber-200')}><div className="font-bold uppercase tracking-wider">{result.comparison.headline}</div><div className="mt-1 text-[11px]">{result.comparison.detail}</div></div>}
+        {result?.routeWarnings?.length ? <div className="space-y-1 rounded-md border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">{result.routeWarnings.map((warning, index) => <div key={index} className="flex items-start gap-2"><AlertCircle className="mt-0.5 h-3 w-3" /><span>{warning}</span></div>)}</div> : null}
+        {result && <>
+          <div><div className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Optimized Fleet</div><div className="space-y-2">{result.optimizedRoutes.map(route => <RouteCard key={`optimized-${route.routeId}`} route={route} tone="optimized" selected={result.routeFocus?.selectedRouteId === route.routeId} onClick={() => onSelectRoute(route.routeId)} />)}</div></div>
+          <div><div className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Baseline Fleet</div><div className="space-y-2">{result.baselineRoutes.map(route => <RouteCard key={`baseline-${route.routeId}`} route={route} tone="baseline" selected={result.routeFocus?.selectedRouteId === route.routeId} onClick={() => onSelectRoute(route.routeId)} />)}</div></div>
+        </>}
+        {result?.diagnostics && <div className="space-y-1 rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px]"><div className="text-xs font-bold uppercase tracking-wider text-slate-500">Routing Diagnostics</div><div className="flex justify-between"><span className="text-slate-500">Provider</span><span>{result.diagnostics.provider ?? 'unknown'}</span></div><div className="flex justify-between"><span className="text-slate-500">Traffic mode</span><span>{result.diagnostics.trafficMode ?? 'freeflow'}</span></div><div className="flex justify-between"><span className="text-slate-500">Routing</span><span>{result.diagnostics.routingStatus}</span></div><div className="flex justify-between"><span className="text-slate-500">Cache</span><span>{result.diagnostics.cacheStatus}</span></div><div className="flex justify-between"><span className="text-slate-500">Fallback legs</span><span>{result.diagnostics.fallbackLegCount}</span></div><div className="flex justify-between"><span className="text-slate-500">Geofence impact</span><span>{result.diagnostics.geofenceImpact}</span></div></div>}
+        <div className="flex h-64 flex-col">
           <div className="mb-2 flex items-center justify-between">
-            <label className="flex items-center text-xs font-bold uppercase tracking-wider text-slate-500">
-              <Terminal className="w-3 h-3 mr-1" />
-              {showDebugLogs ? 'Debug Logs' : 'Dispatcher-Friendly Reasoning'}
-            </label>
-            <button
-              type="button"
-              className="text-[10px] font-mono text-slate-500 hover:text-slate-300"
-              onClick={() => setShowDebugLogs(prev => !prev)}
-            >
-              {showDebugLogs ? 'Show dispatcher view' : 'Show debug'}
-            </button>
+            <label className="flex items-center text-xs font-bold uppercase tracking-wider text-slate-500"><Terminal className="mr-1 h-3 w-3" />{showDebugLogs ? 'Debug Logs' : 'Dispatcher-Friendly Reasoning'}</label>
+            <button type="button" className="font-mono text-[10px] text-slate-500 hover:text-slate-300" onClick={() => setShowDebugLogs(prev => !prev)}>{showDebugLogs ? 'Show dispatcher view' : 'Show debug'}</button>
           </div>
-          <div ref={logContainerRef} className="flex-1 bg-slate-950 rounded-md border border-slate-800 p-3 overflow-y-auto font-mono text-xs space-y-1">
-            {status === ProcessingStatus.IDLE && <div className="text-slate-600 italic">Ready to initialize framework...</div>}
-            {(showDebugLogs ? result?.engineLogs : result?.logs)?.map((log, index) => (
-              <div key={index} className="flex gap-2">
-                <span className="text-emerald-500/50">[{String(index).padStart(2, '0')}]</span>
-                <span className="text-slate-400">{log}</span>
-              </div>
-            ))}
+          <div ref={logContainerRef} className="flex-1 space-y-1 overflow-y-auto rounded-md border border-slate-800 bg-slate-950 p-3 font-mono text-xs">
+            {status === ProcessingStatus.IDLE && <div className="italic text-slate-600">Ready to plan a fleet...</div>}
+            {(showDebugLogs ? result?.engineLogs : result?.logs)?.map((log, index) => <div key={index} className="flex gap-2"><span className="text-emerald-500/50">[{String(index).padStart(2, '0')}]</span><span className="text-slate-400">{log}</span></div>)}
           </div>
         </div>
-
-        <div className="flex flex-col">
-          <label className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Recent Runs</label>
-          <div className="bg-slate-950 rounded-md border border-slate-800 p-3 space-y-2 max-h-36 overflow-y-auto">
-            {history.length === 0 && <div className="text-slate-600 text-xs italic">No runs yet.</div>}
-            {history.map((run, index) => (
-              <div key={`${run.ts}-${index}`} className="flex items-center justify-between text-[11px] bg-slate-900/60 border border-slate-800 rounded px-2 py-1">
-                <div className="flex flex-col">
-                  <span className="text-slate-300 font-mono">{new Date(run.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                  <span className="text-slate-500">{run.baseline.toFixed(1)} to {run.optimized.toFixed(1)} km</span>
-                </div>
-                <div className="text-emerald-400 font-mono">{run.improvement.distancePct > 0 ? `-${run.improvement.distancePct}%` : `${run.improvement.distancePct}%`}</div>
-              </div>
-            ))}
+        <div>
+          <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Recent Runs</label>
+          <div className="max-h-36 space-y-2 overflow-y-auto rounded-md border border-slate-800 bg-slate-950 p-3">
+            {history.length === 0 && <div className="text-xs italic text-slate-600">No runs yet.</div>}
+            {history.map((run, index) => <div key={`${run.ts}-${index}`} className="flex items-center justify-between rounded border border-slate-800 bg-slate-900/60 px-2 py-1 text-[11px]"><div className="flex flex-col"><span className="font-mono text-slate-300">{new Date(run.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><span className="text-slate-500">{run.vehicles} vehicles | {run.baseline.toFixed(1)} to {run.optimized.toFixed(1)} km</span></div><div className="font-mono text-emerald-400">{run.improvement.distancePct > 0 ? `-${run.improvement.distancePct}%` : `${run.improvement.distancePct}%`}</div></div>)}
           </div>
         </div>
       </div>
-
-      <div className="p-4 border-t border-slate-800 bg-slate-900/50 space-y-2">
-        <button
-          onClick={handleExportDriverPack}
-          disabled={!result}
-          className="w-full py-2 px-3 rounded border border-slate-700 hover:bg-slate-800 text-slate-400 hover:text-white transition-colors flex items-center justify-center text-xs font-medium"
-        >
-          <Download className="w-4 h-4 mr-2" />
-          Export Driver_Manifest.html
-        </button>
-        <button
-          onClick={handleExport}
-          disabled={!result}
-          className="w-full py-2 px-3 rounded border border-slate-700 hover:bg-slate-800 text-slate-400 hover:text-white transition-colors flex items-center justify-center text-xs font-medium"
-        >
-          <Download className="w-4 h-4 mr-2" />
-          Export Driver_Manifest.json
-        </button>
-        <button
-          onClick={handleExportGeojson}
-          disabled={!result}
-          className="w-full py-2 px-3 rounded border border-slate-700 hover:bg-slate-800 text-slate-400 hover:text-white transition-colors flex items-center justify-center text-xs font-medium"
-        >
-          <Download className="w-4 h-4 mr-2" />
-          Export Route.geojson
-        </button>
+      <div className="space-y-2 border-t border-slate-800 bg-slate-900/50 p-4">
+        <button onClick={exportFleetHtml} disabled={!result} className="flex w-full items-center justify-center rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"><Download className="mr-2 h-4 w-4" />Export Fleet_Summary.html</button>
+        <button onClick={exportFleetJson} disabled={!result} className="flex w-full items-center justify-center rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"><Download className="mr-2 h-4 w-4" />Export Fleet_Summary.json</button>
+        <button onClick={exportVehicleManifests} disabled={!result} className="flex w-full items-center justify-center rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"><Download className="mr-2 h-4 w-4" />Export Vehicle Manifests</button>
+        <button onClick={exportGeojson} disabled={!result} className="flex w-full items-center justify-center rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"><Download className="mr-2 h-4 w-4" />Export Fleet_Routes.geojson</button>
       </div>
     </div>
   );

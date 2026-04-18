@@ -1,4 +1,4 @@
-import { AppConfigStatus, Geofence, OptimizationResult } from '../types';
+import { AppConfigStatus, FleetConfig, Geofence, OptimizationResult } from '../types';
 
 type ImagePayload = { base64: string; mimeType: string };
 
@@ -7,6 +7,7 @@ type OptimizePayload = {
   images: ImagePayload[];
   preferences?: { weightTime?: number; weightEmissions?: number; weightDistance?: number };
   optimization?: { mode?: 'fast' | 'quality'; timeBudgetMs?: number; baselineMode?: 'dynamic' | 'distance' };
+  fleet?: FleetConfig;
   geofences?: Geofence[];
 };
 

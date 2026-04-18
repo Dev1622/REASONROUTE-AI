@@ -7,7 +7,7 @@ import {
   EngineResult,
   CompressionPattern,
 } from "./reasonRouteEngine";
-import { Geofence, RoutedRoad, ValidationSummary } from "../types";
+import { FleetComparison, FleetConfig, FleetRoutePlan, Geofence, RoutedRoad, ValidationSummary } from "../types";
 
 ensureLocalEnvLoaded();
 
@@ -44,6 +44,10 @@ export type OptimizationResult = {
   nodes: Node[];
   baselinePath: string[];
   optimizedPath: string[];
+  fleetConfig?: FleetConfig;
+  baselineRoutes: FleetRoutePlan[];
+  optimizedRoutes: FleetRoutePlan[];
+  comparison?: FleetComparison;
   aiOptimizedPath?: string[];
   disruptions: {
     x: number;
@@ -101,6 +105,49 @@ type ParseStopsResult = {
   coordinateMode: "geo" | "demo";
   validation: ValidationSummary;
 };
+
+function normalizeFleetConfig(fleet: FleetConfig | undefined, stopCount: number): FleetConfig {
+  const requestedCount = Math.max(2, Math.min(5, Math.round(fleet?.vehicleCount ?? 3)));
+  const vehicleCount = Math.max(1, Math.min(requestedCount, Math.max(stopCount, 1)));
+  const vehicleLabels = Array.from({ length: vehicleCount }, (_, index) => {
+    const raw = fleet?.vehicleLabels?.[index]?.trim();
+    return raw && raw.length > 0 ? raw : `Vehicle ${index + 1}`;
+  });
+  return { vehicleCount, vehicleLabels };
+}
+
+function summarizePath(path: string[], nodeMap: Map<string, Node>) {
+  const stopIds = path.filter((id, index) => index !== 0 && index !== path.length - 1);
+  return {
+    totalLegs: Math.max(0, path.length - 1),
+    stopCount: stopIds.length,
+    firstStopLabel: stopIds[0] ? nodeMap.get(stopIds[0])?.label ?? stopIds[0] : "N/A",
+    lastStopLabel: stopIds[stopIds.length - 1] ? nodeMap.get(stopIds[stopIds.length - 1])?.label ?? stopIds[stopIds.length - 1] : "N/A",
+    longestLegKm: 0,
+  };
+}
+
+function buildFleetRoutePlans(
+  paths: string[][] | undefined,
+  nodeMap: Map<string, Node>,
+  depotId: string,
+  fleetConfig: FleetConfig
+): FleetRoutePlan[] {
+  const resolvedPaths = paths?.length
+    ? paths
+    : Array.from({ length: fleetConfig.vehicleCount }, () => [depotId, depotId]);
+
+  return resolvedPaths.map((path, index) => ({
+    routeId: `vehicle_${index + 1}`,
+    vehicleIndex: index,
+    vehicleLabel: fleetConfig.vehicleLabels?.[index] ?? `Vehicle ${index + 1}`,
+    path,
+    road: null,
+    metrics: { distance: 0, time: 0, emissions: 0 },
+    summary: summarizePath(path, nodeMap),
+    warnings: [],
+  }));
+}
 
 function hasHeaderKeywords(line: string): boolean {
   const normalized = line.toLowerCase();
@@ -405,9 +452,11 @@ export const optimizeRoute = async (
     weightEmissions?: number;
     weightDistance?: number;
   },
-  optimization?: { mode?: "fast" | "quality"; timeBudgetMs?: number; baselineMode?: "dynamic" | "distance" }
+  optimization?: { mode?: "fast" | "quality"; timeBudgetMs?: number; baselineMode?: "dynamic" | "distance" },
+  fleet?: FleetConfig
 ): Promise<OptimizationResult> => {
   const { nodes, depotId, coordinateMode, validation } = parseStopsToNodes(stopsInput);
+  const fleetConfig = normalizeFleetConfig(fleet, nodes.length - 1);
   if (validation.errors.length > 0) {
     throw new Error(validation.errors.join(" "));
   }
@@ -462,17 +511,29 @@ export const optimizeRoute = async (
       timeBudgetMs: optimization?.timeBudgetMs,
     },
     baselineMode: optimization?.baselineMode,
+    benchmark: {
+      metric: "cvrplib_euc2d",
+      vehicleCount: fleetConfig.vehicleCount,
+      vehicleCapacity: Math.max(1, Math.ceil(Math.max(nodes.length - 1, 1) / fleetConfig.vehicleCount)),
+      demands: Object.fromEntries(nodes.filter(node => node.id !== depotId).map(node => [node.id, 1])),
+    },
   };
 
   const engineResult = runReasonRouteEngine(engineInput);
   const projectedDisruptions = coordinateMode === "geo" ? projectDisruptionsToGeo(disruptions, nodes) : disruptions;
   const reasoningLog = await generateReasoningLog(nodes, engineResult, projectedDisruptions);
   const toKg = (g: number) => +(g / 1000).toFixed(3);
+  const nodeMap = new Map(nodes.map(node => [node.id, node]));
+  const baselineRoutes = buildFleetRoutePlans(engineResult.baselineRoutes ?? [engineResult.baselinePath], nodeMap, depotId, fleetConfig);
+  const optimizedRoutes = buildFleetRoutePlans(engineResult.optimizedRoutes ?? [engineResult.optimizedPath], nodeMap, depotId, fleetConfig);
 
   return {
     nodes,
     baselinePath: engineResult.baselinePath,
     optimizedPath: engineResult.optimizedPath,
+    fleetConfig,
+    baselineRoutes,
+    optimizedRoutes,
     aiOptimizedPath: engineResult.optimizedPath,
     disruptions: projectedDisruptions,
     geofences: [],
