@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Download, FileJson, Play, Terminal, Upload, X } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Download, FileJson, Play, RefreshCcw, Sparkles, Terminal, Upload, X } from 'lucide-react';
 import clsx from 'clsx';
 import * as XLSX from 'xlsx';
-import { AppConfigStatus, FleetConfig, FleetRoutePlan, OptimizationResult, ProcessingStatus } from '../types';
+import { AdjustmentRequest, AppConfigStatus, FleetConfig, FleetRoutePlan, OptimizationResult, ProcessingStatus } from '../types';
 
 interface SidebarProps {
   onOptimize: (
@@ -12,6 +12,8 @@ interface SidebarProps {
     optimization?: { mode?: 'fast' | 'quality'; timeBudgetMs?: number; baselineMode?: 'dynamic' | 'distance' },
     fleet?: FleetConfig
   ) => void;
+  onApprove: () => void;
+  onRequestAdjustment: (adjustmentRequest: AdjustmentRequest) => void;
   onSelectRoute: (routeId?: string) => void;
   status: ProcessingStatus;
   result: OptimizationResult | null;
@@ -74,6 +76,9 @@ function routeFeature(result: OptimizationResult, route: FleetRoutePlan, collect
 function buildFleetSummary(result: OptimizationResult) {
   return {
     generatedAt: new Date().toISOString(),
+    decisionStatus: result.decisionStatus,
+    decisionSummary: result.decisionSummary,
+    adjustmentRequest: result.adjustmentRequest,
     fleetConfig: result.fleetConfig,
     comparison: result.comparison,
     metrics: result.metrics,
@@ -87,13 +92,15 @@ function buildFleetSummaryHtml(result: OptimizationResult) {
   const rows = result.optimizedRoutes
     .map(route => `<tr><td>${route.vehicleLabel}</td><td>${route.summary.stopCount ?? 0}</td><td>${route.metrics.distance.toFixed(2)} km</td><td>${route.metrics.time.toFixed(1)} min</td><td>${route.metrics.emissions.toFixed(3)} kg</td></tr>`)
     .join('');
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>Fleet Summary</title><style>body{font-family:Arial,sans-serif;margin:24px;color:#0f172a}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;text-align:left}th{background:#e2e8f0}.cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0}.card{border:1px solid #cbd5e1;border-radius:10px;padding:12px;background:#f8fafc}</style></head><body><h1>${result.comparison?.headline ?? 'Fleet Summary'}</h1><p>${result.comparison?.detail ?? ''}</p><div class="cards"><div class="card"><strong>Vehicles</strong><br/>${result.fleetConfig?.vehicleCount ?? result.optimizedRoutes.length}</div><div class="card"><strong>Distance</strong><br/>${result.metrics.optimized.distance.toFixed(2)} km</div><div class="card"><strong>Time</strong><br/>${result.metrics.optimized.time.toFixed(1)} min</div><div class="card"><strong>Gain</strong><br/>${result.metrics.improvement.timePct}% time</div></div><table><thead><tr><th>Vehicle</th><th>Stops</th><th>Distance</th><th>Time</th><th>Emissions</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>Route Decision Summary</title><style>body{font-family:Arial,sans-serif;margin:24px;color:#0f172a}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;text-align:left}th{background:#e2e8f0}.cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0}.card{border:1px solid #cbd5e1;border-radius:10px;padding:12px;background:#f8fafc}</style></head><body><h1>${result.decisionSummary?.title ?? result.comparison?.headline ?? 'Route Decision Summary'}</h1><p>${result.decisionSummary?.summary ?? result.comparison?.detail ?? ''}</p><div class="cards"><div class="card"><strong>Status</strong><br/>${result.decisionStatus ?? 'proposed'}</div><div class="card"><strong>Distance</strong><br/>${result.metrics.optimized.distance.toFixed(2)} km</div><div class="card"><strong>Time</strong><br/>${result.metrics.optimized.time.toFixed(1)} min</div><div class="card"><strong>Routes</strong><br/>${result.fleetConfig?.vehicleCount ?? result.optimizedRoutes.length}</div></div><table><thead><tr><th>Vehicle</th><th>Stops</th><th>Distance</th><th>Time</th><th>Emissions</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
 }
 
 function buildVehicleManifest(result: OptimizationResult, route: FleetRoutePlan) {
   const nodeMap = new Map(result.nodes.map(node => [node.id, node]));
   return {
     generatedAt: new Date().toISOString(),
+    decisionStatus: result.decisionStatus,
+    decisionSummary: result.decisionSummary,
     vehicleLabel: route.vehicleLabel,
     routeId: route.routeId,
     metrics: route.metrics,
@@ -109,6 +116,16 @@ function buildVehicleManifest(result: OptimizationResult, route: FleetRoutePlan)
       return { sequence: index + 1, id, label: node?.label ?? id, type: node?.type ?? 'stop', lat: node?.lat, lng: node?.lng };
     }),
   };
+}
+
+const ADJUSTMENT_OPTIONS: AdjustmentRequest[] = [
+  { type: 'prioritize_eta', label: 'Prioritize ETA', note: 'Bias the route toward the fastest arrival window.' },
+  { type: 're_evaluate', label: 'Re-evaluate', note: 'Run a deeper search before approving this recommendation.' },
+  { type: 'simplify_route', label: 'Simplify route', note: 'Prefer a cleaner route shape with fewer detours where possible.' },
+];
+
+function sanitizeReasoningLine(line: string) {
+  return line.replace(/^\[\d+\]\s*/, '').trim();
 }
 
 const RouteCard: React.FC<{ route: FleetRoutePlan; selected: boolean; tone: 'baseline' | 'optimized'; onClick: () => void }> = ({ route, selected, tone, onClick }) => {
@@ -139,7 +156,7 @@ const RouteCard: React.FC<{ route: FleetRoutePlan; selected: boolean; tone: 'bas
   );
 };
 
-const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onSelectRoute, status, result, history, errorMessage, configStatus }) => {
+const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjustment, onSelectRoute, status, result, history, errorMessage, configStatus }) => {
   const [stops, setStops] = useState(SAMPLE_SCENARIOS[0].value);
   const [images, setImages] = useState<File[]>([]);
   const [jsonFileName, setJsonFileName] = useState<string | null>(null);
@@ -151,6 +168,8 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onSelectRoute, status, re
   const [vehicleNames, setVehicleNames] = useState('Vehicle 1, Vehicle 2, Vehicle 3');
   const [showDebugLogs, setShowDebugLogs] = useState(false);
   const [healthCollapsed, setHealthCollapsed] = useState(false);
+  const [selectedAdjustment, setSelectedAdjustment] = useState<AdjustmentRequest>(ADJUSTMENT_OPTIONS[0]);
+  const [adjustmentNote, setAdjustmentNote] = useState('');
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -164,8 +183,20 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onSelectRoute, status, re
     }
   }, [result?.fleetConfig]);
 
+  useEffect(() => {
+    if (result?.adjustmentRequest) {
+      const matched = ADJUSTMENT_OPTIONS.find(option => option.type === result.adjustmentRequest?.type);
+      if (matched) setSelectedAdjustment(matched);
+      setAdjustmentNote(result.adjustmentRequest.note ?? '');
+    }
+  }, [result?.adjustmentRequest]);
+
   const isProcessing = ![ProcessingStatus.IDLE, ProcessingStatus.COMPLETE, ProcessingStatus.ERROR].includes(status);
   const parsedVehicleLabels = useMemo(() => vehicleNames.split(',').map(label => label.trim()).filter(Boolean).slice(0, vehicleCount), [vehicleNames, vehicleCount]);
+  const reasoningEvidence = useMemo(
+    () => (result?.decisionSummary?.evidence?.length ? result.decisionSummary.evidence : (result?.logs ?? []).map(sanitizeReasoningLine).filter(Boolean).slice(0, 4)),
+    [result]
+  );
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
@@ -223,16 +254,16 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onSelectRoute, status, re
     }
   };
 
-  const exportFleetJson = () => result && downloadText('Fleet_Summary.json', JSON.stringify(buildFleetSummary(result), null, 2), 'application/json');
-  const exportFleetHtml = () => result && downloadText('Fleet_Summary.html', buildFleetSummaryHtml(result), 'text/html');
+  const exportFleetJson = () => result && downloadText('Route_Decision.json', JSON.stringify(buildFleetSummary(result), null, 2), 'application/json');
+  const exportFleetHtml = () => result && downloadText('Route_Decision.html', buildFleetSummaryHtml(result), 'text/html');
   const exportVehicleManifests = () => result && result.optimizedRoutes.forEach(route => downloadText(`${route.vehicleLabel.replace(/\s+/g, '_')}_Manifest.json`, JSON.stringify(buildVehicleManifest(result, route), null, 2), 'application/json'));
-  const exportGeojson = () => result && downloadText('Fleet_Routes.geojson', JSON.stringify({ type: 'FeatureCollection', features: [...result.baselineRoutes.map(route => routeFeature(result, route, 'baseline')), ...result.optimizedRoutes.map(route => routeFeature(result, route, 'optimized'))] }, null, 2), 'application/json');
+  const exportGeojson = () => result && downloadText('Route_Geometry.geojson', JSON.stringify({ type: 'FeatureCollection', features: [...result.baselineRoutes.map(route => routeFeature(result, route, 'baseline')), ...result.optimizedRoutes.map(route => routeFeature(result, route, 'optimized'))] }, null, 2), 'application/json');
 
   return (
     <div className="flex h-full flex-col border-r border-slate-800 bg-slate-900 text-slate-300">
       <div className="border-b border-slate-800 p-6">
         <h1 className="bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-2xl font-bold text-transparent">ReasonRoute AI</h1>
-        <p className="mt-1 font-mono text-xs text-slate-500">FLEET PLANNER v3.0</p>
+        <p className="mt-1 font-mono text-xs text-slate-500">EXPLAINABLE ROUTE INTELLIGENCE</p>
       </div>
       <div className="flex-1 space-y-6 overflow-y-auto p-6">
         <div className={`rounded-md border px-3 py-3 text-xs ${configStatus?.ready ? 'border-emerald-500/30 bg-emerald-950/15 text-emerald-200' : 'border-amber-500/30 bg-amber-950/20 text-amber-200'}`}>
@@ -277,7 +308,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onSelectRoute, status, re
             </div>
           </div>
           <textarea className="h-36 w-full resize-none rounded-md border border-slate-800 bg-slate-950 p-3 font-mono text-sm text-slate-300 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/50" value={stops} onChange={e => setStops(e.target.value)} disabled={isProcessing} />
-          <p className="mt-2 text-[11px] text-slate-500">First row should be the depot. Fleet planning splits the remaining stops across vehicles.</p>
+          <p className="mt-2 text-[11px] text-slate-500">First row should be the depot. ReasonRoute will propose a route plan and explain why it won.</p>
         </div>
 
         <div className="space-y-3 rounded-md border border-slate-800 bg-slate-950/40 p-3">
@@ -287,7 +318,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onSelectRoute, status, re
           </div>
           <div className="flex items-center gap-3">
             <span className="w-24 text-[11px] text-slate-400">Vehicle count</span>
-            <input type="range" min={2} max={5} step={1} value={vehicleCount} onChange={e => setVehicleCount(Number(e.target.value))} disabled={isProcessing} className="flex-1 accent-emerald-500" />
+            <input type="range" min={2} max={25} step={1} value={vehicleCount} onChange={e => setVehicleCount(Number(e.target.value))} disabled={isProcessing} className="flex-1 accent-emerald-500" />
             <span className="w-8 text-right font-mono text-[11px] text-slate-300">{vehicleCount}</span>
           </div>
           <input type="text" value={vehicleNames} onChange={e => setVehicleNames(e.target.value)} disabled={isProcessing} className="w-full rounded border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-emerald-500" placeholder="Vehicle 1, Vehicle 2, Vehicle 3" />
@@ -356,25 +387,90 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onSelectRoute, status, re
           )}
         </div>
         <button onClick={() => onOptimize(stops, images, weights, { ...optimization, baselineMode }, { vehicleCount, vehicleLabels: parsedVehicleLabels })} disabled={isProcessing || !stops.trim()} className={clsx('flex w-full items-center justify-center rounded-md px-4 py-3 font-bold transition-all', isProcessing ? 'cursor-not-allowed bg-slate-800 text-slate-500' : 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/20 hover:bg-emerald-500')}>
-          {isProcessing ? <span className="flex items-center">Processing...</span> : <><Play className="mr-2 h-4 w-4" />PLAN FLEET</>}
+          {isProcessing ? <span className="flex items-center">Preparing proposal...</span> : <><Play className="mr-2 h-4 w-4" />PROPOSE ROUTE</>}
         </button>
-        {result?.comparison && <div className={clsx('rounded-md border px-3 py-3 text-xs', result.comparison.status === 'improved' ? 'border-emerald-500/30 bg-emerald-950/20 text-emerald-200' : result.comparison.status === 'worsened' ? 'border-red-500/30 bg-red-950/20 text-red-200' : 'border-amber-500/30 bg-amber-950/20 text-amber-200')}><div className="font-bold uppercase tracking-wider">{result.comparison.headline}</div><div className="mt-1 text-[11px]">{result.comparison.detail}</div></div>}
+        {result?.comparison && <div className={clsx('rounded-md border px-3 py-3 text-xs', result.comparison.status === 'improved' ? 'border-emerald-500/30 bg-emerald-950/20 text-emerald-200' : result.comparison.status === 'worsened' ? 'border-red-500/30 bg-red-950/20 text-red-200' : result.comparison.status === 'validated' ? 'border-blue-500/30 bg-blue-950/20 text-blue-200' : 'border-amber-500/30 bg-amber-950/20 text-amber-200')}><div className="font-bold uppercase tracking-wider">{result.comparison.headline}</div><div className="mt-1 text-[11px]">{result.comparison.detail}</div></div>}
+        {result ? (
+          <div className="space-y-3 rounded-md border border-violet-500/20 bg-violet-950/10 p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-violet-300"><Sparkles className="h-3.5 w-3.5" />Route Review</div>
+                <div className="mt-2 text-sm font-semibold text-slate-100">{result.decisionSummary?.title ?? 'Route proposal is ready for review'}</div>
+                <div className="mt-1 text-xs text-slate-400">{result.decisionSummary?.summary ?? 'Review the recommendation before approving or requesting a change.'}</div>
+              </div>
+              <div className={clsx('rounded-full border px-2 py-1 font-mono text-[10px] uppercase tracking-wider', result.decisionStatus === 'approved' ? 'border-emerald-500/40 bg-emerald-950/20 text-emerald-300' : result.decisionStatus === 'updated_proposal' ? 'border-violet-500/40 bg-violet-950/20 text-violet-300' : 'border-slate-700 bg-slate-950/60 text-slate-300')}>
+                {result.decisionStatus ?? 'proposed'}
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {ADJUSTMENT_OPTIONS.map(option => (
+                <button
+                  key={option.type}
+                  type="button"
+                  disabled={isProcessing}
+                  className={clsx('rounded border px-2 py-2 text-[11px] transition-colors', selectedAdjustment.type === option.type ? 'border-violet-500/40 bg-violet-950/20 text-violet-200' : 'border-slate-800 bg-slate-950/60 text-slate-400 hover:border-slate-700')}
+                  onClick={() => setSelectedAdjustment(option)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <textarea
+              value={adjustmentNote}
+              onChange={event => setAdjustmentNote(event.target.value)}
+              disabled={isProcessing}
+              className="h-20 w-full resize-none rounded border border-slate-800 bg-slate-950/80 px-3 py-2 text-xs text-slate-300 outline-none focus:border-violet-500"
+              placeholder="Optional dispatcher note. Example: keep this proposal but tighten ETA confidence."
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                disabled={isProcessing || result.decisionStatus === 'approved'}
+                className={clsx('flex items-center justify-center rounded border px-3 py-2 text-sm font-semibold transition-colors', result.decisionStatus === 'approved' ? 'border-slate-800 bg-slate-900 text-slate-500' : 'border-emerald-500/40 bg-emerald-950/20 text-emerald-200 hover:bg-emerald-950/35')}
+                onClick={onApprove}
+              >
+                <CheckCircle2 className="mr-2 h-4 w-4" />Approve Route
+              </button>
+              <button
+                type="button"
+                disabled={isProcessing}
+                className="flex items-center justify-center rounded border border-violet-500/40 bg-violet-950/20 px-3 py-2 text-sm font-semibold text-violet-200 transition-colors hover:bg-violet-950/35"
+                onClick={() => onRequestAdjustment({ ...selectedAdjustment, note: adjustmentNote.trim() || selectedAdjustment.note })}
+              >
+                <RefreshCcw className="mr-2 h-4 w-4" />Request Adjustment
+              </button>
+            </div>
+            <div className="text-[11px] text-slate-500">{result.decisionSummary?.reviewPrompt ?? 'Review the route rationale below before dispatch.'}</div>
+            {result.previousProposal ? (
+              <div className="rounded border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px] text-slate-400">
+                Previous proposal: {result.previousProposal.metrics.optimized.distance.toFixed(1)} km, {result.previousProposal.metrics.optimized.time.toFixed(1)} min.
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {result?.routeWarnings?.length ? <div className="space-y-1 rounded-md border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">{result.routeWarnings.map((warning, index) => <div key={index} className="flex items-start gap-2"><AlertCircle className="mt-0.5 h-3 w-3" /><span>{warning}</span></div>)}</div> : null}
-        {result && <>
-          <div><div className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Optimized Fleet</div><div className="space-y-2">{result.optimizedRoutes.map(route => <RouteCard key={`optimized-${route.routeId}`} route={route} tone="optimized" selected={result.routeFocus?.selectedRouteId === route.routeId} onClick={() => onSelectRoute(route.routeId)} />)}</div></div>
-          <div><div className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Baseline Fleet</div><div className="space-y-2">{result.baselineRoutes.map(route => <RouteCard key={`baseline-${route.routeId}`} route={route} tone="baseline" selected={result.routeFocus?.selectedRouteId === route.routeId} onClick={() => onSelectRoute(route.routeId)} />)}</div></div>
-        </>}
-        {result?.diagnostics && <div className="space-y-1 rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px]"><div className="text-xs font-bold uppercase tracking-wider text-slate-500">Routing Diagnostics</div><div className="flex justify-between"><span className="text-slate-500">Provider</span><span>{result.diagnostics.provider ?? 'unknown'}</span></div><div className="flex justify-between"><span className="text-slate-500">Traffic mode</span><span>{result.diagnostics.trafficMode ?? 'freeflow'}</span></div><div className="flex justify-between"><span className="text-slate-500">Routing</span><span>{result.diagnostics.routingStatus}</span></div><div className="flex justify-between"><span className="text-slate-500">Cache</span><span>{result.diagnostics.cacheStatus}</span></div><div className="flex justify-between"><span className="text-slate-500">Fallback legs</span><span>{result.diagnostics.fallbackLegCount}</span></div><div className="flex justify-between"><span className="text-slate-500">Geofence impact</span><span>{result.diagnostics.geofenceImpact}</span></div></div>}
         <div className="flex h-64 flex-col">
           <div className="mb-2 flex items-center justify-between">
-            <label className="flex items-center text-xs font-bold uppercase tracking-wider text-slate-500"><Terminal className="mr-1 h-3 w-3" />{showDebugLogs ? 'Debug Logs' : 'Dispatcher-Friendly Reasoning'}</label>
-            <button type="button" className="font-mono text-[10px] text-slate-500 hover:text-slate-300" onClick={() => setShowDebugLogs(prev => !prev)}>{showDebugLogs ? 'Show dispatcher view' : 'Show debug'}</button>
+            <label className="flex items-center text-xs font-bold uppercase tracking-wider text-slate-500"><Terminal className="mr-1 h-3 w-3" />{showDebugLogs ? 'Debug Logs' : 'Why This Route'}</label>
+            <button type="button" className="font-mono text-[10px] text-slate-500 hover:text-slate-300" onClick={() => setShowDebugLogs(prev => !prev)}>{showDebugLogs ? 'Show route rationale' : 'Show debug'}</button>
           </div>
-          <div ref={logContainerRef} className="flex-1 space-y-1 overflow-y-auto rounded-md border border-slate-800 bg-slate-950 p-3 font-mono text-xs">
-            {status === ProcessingStatus.IDLE && <div className="italic text-slate-600">Ready to plan a fleet...</div>}
-            {(showDebugLogs ? result?.engineLogs : result?.logs)?.map((log, index) => <div key={index} className="flex gap-2"><span className="text-emerald-500/50">[{String(index).padStart(2, '0')}]</span><span className="text-slate-400">{log}</span></div>)}
+          <div ref={logContainerRef} className="flex-1 space-y-2 overflow-y-auto rounded-md border border-slate-800 bg-slate-950 p-3 font-mono text-xs">
+            {status === ProcessingStatus.IDLE && <div className="italic text-slate-600">Ready to review a route proposal...</div>}
+            {showDebugLogs
+              ? (result?.engineLogs ?? []).map((log, index) => <div key={index} className="flex gap-2"><span className="text-emerald-500/50">[{String(index).padStart(2, '0')}]</span><span className="text-slate-400">{log}</span></div>)
+              : reasoningEvidence.map((line, index) => (
+                  <div key={index} className="rounded border border-slate-800 bg-slate-900/60 px-3 py-2">
+                    <div className="mb-1 text-[10px] uppercase tracking-wider text-violet-300">Evidence {String(index + 1).padStart(2, '0')}</div>
+                    <div className="font-sans text-sm leading-6 text-slate-200">{line}</div>
+                  </div>
+                ))}
           </div>
         </div>
+        {result?.diagnostics && <div className="space-y-1 rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px]"><div className="text-xs font-bold uppercase tracking-wider text-slate-500">Decision Diagnostics</div><div className="flex justify-between"><span className="text-slate-500">Provider</span><span>{result.diagnostics.provider ?? 'unknown'}</span></div><div className="flex justify-between"><span className="text-slate-500">Traffic mode</span><span>{result.diagnostics.trafficMode ?? 'freeflow'}</span></div><div className="flex justify-between"><span className="text-slate-500">Routing</span><span>{result.diagnostics.routingStatus}</span></div><div className="flex justify-between"><span className="text-slate-500">Cache</span><span>{result.diagnostics.cacheStatus}</span></div><div className="flex justify-between"><span className="text-slate-500">Fallback legs</span><span>{result.diagnostics.fallbackLegCount}</span></div><div className="flex justify-between"><span className="text-slate-500">Geofence impact</span><span>{result.diagnostics.geofenceImpact}</span></div><div className="flex justify-between"><span className="text-slate-500">Optimize time</span><span>{result.diagnostics.optimizationTimeMs ?? 0} ms</span></div><div className="flex justify-between"><span className="text-slate-500">Road routing</span><span>{result.diagnostics.roadRoutingTimeMs ?? 0} ms</span></div><div className="flex justify-between"><span className="text-slate-500">Total processing</span><span>{result.diagnostics.totalProcessingTimeMs ?? 0} ms</span></div><div className="flex justify-between"><span className="text-slate-500">Dispatcher SLA</span><span>{result.diagnostics.dispatcherReady ? 'under 30s' : 'over 30s'}</span></div></div>}
+        {result && <>
+          <div><div className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Proposed Route Set</div><div className="space-y-2">{result.optimizedRoutes.map(route => <RouteCard key={`optimized-${route.routeId}`} route={route} tone="optimized" selected={result.routeFocus?.selectedRouteId === route.routeId} onClick={() => onSelectRoute(route.routeId)} />)}</div></div>
+          <div><div className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Baseline Comparison</div><div className="space-y-2">{result.baselineRoutes.map(route => <RouteCard key={`baseline-${route.routeId}`} route={route} tone="baseline" selected={result.routeFocus?.selectedRouteId === route.routeId} onClick={() => onSelectRoute(route.routeId)} />)}</div></div>
+        </>}
         <div>
           <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Recent Runs</label>
           <div className="max-h-36 space-y-2 overflow-y-auto rounded-md border border-slate-800 bg-slate-950 p-3">
@@ -384,10 +480,10 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onSelectRoute, status, re
         </div>
       </div>
       <div className="space-y-2 border-t border-slate-800 bg-slate-900/50 p-4">
-        <button onClick={exportFleetHtml} disabled={!result} className="flex w-full items-center justify-center rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"><Download className="mr-2 h-4 w-4" />Export Fleet_Summary.html</button>
-        <button onClick={exportFleetJson} disabled={!result} className="flex w-full items-center justify-center rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"><Download className="mr-2 h-4 w-4" />Export Fleet_Summary.json</button>
+        <button onClick={exportFleetHtml} disabled={!result} className="flex w-full items-center justify-center rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"><Download className="mr-2 h-4 w-4" />Export Route_Decision.html</button>
+        <button onClick={exportFleetJson} disabled={!result} className="flex w-full items-center justify-center rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"><Download className="mr-2 h-4 w-4" />Export Route_Decision.json</button>
         <button onClick={exportVehicleManifests} disabled={!result} className="flex w-full items-center justify-center rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"><Download className="mr-2 h-4 w-4" />Export Vehicle Manifests</button>
-        <button onClick={exportGeojson} disabled={!result} className="flex w-full items-center justify-center rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"><Download className="mr-2 h-4 w-4" />Export Fleet_Routes.geojson</button>
+        <button onClick={exportGeojson} disabled={!result} className="flex w-full items-center justify-center rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"><Download className="mr-2 h-4 w-4" />Export Route_Geometry.geojson</button>
       </div>
     </div>
   );

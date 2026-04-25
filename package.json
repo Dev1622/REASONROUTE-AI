@@ -9,6 +9,7 @@
         "preview": "vite preview",
         "api": "tsx api/server.ts",
         "benchmark:cvrplib": "npx tsx test/benchmark_cvrplib.ts",
+        "benchmark:fleet-scale": "npx tsx test/benchmark_fleet_scale.ts",
         "test:urban": "npx tsx test/test_large_urban_sanity.ts"
     },
     "dependencies": {

@@ -366,7 +366,7 @@ function GeoMap({ data, onGeofencesChange, filters, focus, onFiltersChange, onFo
           })}
         </Pane>
       </MapContainer>
-      <Panel title="Map Controls" collapsed={controlsCollapsed} onToggleCollapsed={() => setControlsCollapsed(prev => !prev)} className="left-4 top-4 w-64">
+      <Panel title="Route Layers" collapsed={controlsCollapsed} onToggleCollapsed={() => setControlsCollapsed(prev => !prev)} className="left-4 top-4 w-64">
         <div className="mt-3 grid grid-cols-2 gap-2">
           <button type="button" className={`rounded border px-2 py-1 ${filters.showBaseline ? 'border-slate-500 text-slate-200' : 'border-slate-800 text-slate-500'}`} onClick={() => onFiltersChange(prev => ({ ...prev, showBaseline: !prev.showBaseline }))}>Baseline</button>
           <button type="button" className={`rounded border px-2 py-1 ${filters.showOptimized ? 'border-emerald-500/50 text-emerald-300' : 'border-slate-800 text-slate-500'}`} onClick={() => onFiltersChange(prev => ({ ...prev, showOptimized: !prev.showOptimized }))}>Optimized</button>
@@ -406,7 +406,7 @@ function GeoMap({ data, onGeofencesChange, filters, focus, onFiltersChange, onFo
           </div>
         </Panel>
       )}
-      <Panel title="Geofences" collapsed={geofencesCollapsed} onToggleCollapsed={() => setGeofencesCollapsed(prev => !prev)} className="bottom-40 right-4 w-72">
+      <Panel title="Blocked Corridors" collapsed={geofencesCollapsed} onToggleCollapsed={() => setGeofencesCollapsed(prev => !prev)} className="bottom-40 right-4 w-72">
         <div className="mt-3 space-y-2">
           <button type="button" className="w-full rounded border border-slate-700 px-2 py-1 text-left hover:bg-slate-800" onClick={() => { setDrawing(true); setDraftPoints([]); }}>
             Mark blocked road
@@ -427,7 +427,7 @@ function GeoMap({ data, onGeofencesChange, filters, focus, onFiltersChange, onFo
         </div>
       </Panel>
       <div className="absolute bottom-40 left-4 z-[900] rounded-lg border border-slate-700/80 bg-slate-950/85 px-3 py-2 text-[11px] font-mono text-slate-300 shadow-xl backdrop-blur">
-        Fleet map: {data.optimizedRoutes.length} routes | {data.diagnostics?.provider === 'mapbox' ? 'Mapbox traffic' : 'OSRM'} active{filters.showTraffic && trafficAvailable ? ` | traffic overlay on (${trafficFilter})` : ''}
+        Route proposal: {data.optimizedRoutes.length} routes | {data.diagnostics?.provider === 'mapbox' ? 'Mapbox traffic active' : 'OSRM active'}{filters.showTraffic && trafficAvailable ? ` | traffic overlay on (${trafficFilter})` : ''}
       </div>
     </div>
   );
@@ -458,18 +458,18 @@ function DemoMap({ data }: { data: OptimizationResult }) {
   }, [data]);
   return (
     <div className="relative h-full w-full bg-slate-900">
-      <div className="absolute bottom-4 left-4 z-10 rounded-lg border border-amber-500/30 bg-slate-950/85 px-3 py-2 text-[11px] font-mono text-amber-200 shadow-xl backdrop-blur">Demo coordinate mode: fleet split visible, road routing disabled until geo input is provided</div>
+      <div className="absolute bottom-4 left-4 z-10 rounded-lg border border-amber-500/30 bg-slate-950/85 px-3 py-2 text-[11px] font-mono text-amber-200 shadow-xl backdrop-blur">Demo coordinate mode: explainable routing stays available, but road-level evidence appears once geographic input is provided</div>
       <svg ref={svgRef} className="h-full w-full" />
     </div>
   );
 }
 
 function LoadingState() {
-  return <div className="flex h-full w-full flex-col items-center justify-center bg-slate-900 text-slate-300"><div className="mb-4 h-16 w-16 animate-spin rounded-full border-4 border-emerald-500/20 border-t-emerald-500" /><p className="font-mono text-sm">Preparing fleet routes and road overlays...</p></div>;
+  return <div className="flex h-full w-full flex-col items-center justify-center bg-slate-900 text-slate-300"><div className="mb-4 h-16 w-16 animate-spin rounded-full border-4 border-emerald-500/20 border-t-emerald-500" /><p className="font-mono text-sm">Preparing route proposal and map evidence...</p></div>;
 }
 
 function EmptyState() {
-  return <div className="flex h-full w-full items-center justify-center bg-slate-900/70 text-slate-400"><div className="max-w-sm text-center"><p className="font-mono text-sm text-slate-300">Ready for fleet inputs</p><p className="mt-2 text-xs text-slate-500">Paste `label, lat, lng` to generate multi-vehicle fleet routes.</p></div></div>;
+  return <div className="flex h-full w-full items-center justify-center bg-slate-900/70 text-slate-400"><div className="max-w-sm text-center"><p className="font-mono text-sm text-slate-300">Ready for route proposals</p><p className="mt-2 text-xs text-slate-500">Paste `label, lat, lng` to generate an explainable route recommendation.</p></div></div>;
 }
 
 const MapVisualization: React.FC<MapVisualizationProps> = ({ data, loading, onGeofencesChange, filters, focus, onFiltersChange, onFocusChange }) => {

@@ -4,7 +4,9 @@ import { ensureLocalEnvLoaded } from '../services/env';
 import { getAiConfigStatus, optimizeRoute } from '../services/geminiService';
 import { getRoutingConfigStatus, routePathOnRoads } from '../services/roadRoutingService';
 import {
+  AdjustmentRequest,
   AppConfigStatus,
+  DecisionSummary,
   FleetComparison,
   FleetConfig,
   FleetRoutePlan,
@@ -12,6 +14,8 @@ import {
   Metrics,
   Node,
   OptimizationResult,
+  PlanningInputs,
+  ProposalSnapshot,
   RouteDiagnostics,
   RouteSummary,
   RoutedRoad,
@@ -41,6 +45,147 @@ function toStopsText(stops: any[]): string {
       return String(label);
     })
     .join('\n');
+}
+
+function sanitizeReasoningLine(line: string): string {
+  return line.replace(/^\[\d+\]\s*/, '').trim();
+}
+
+function routeHeadline(result: OptimizationResult): string {
+  switch (result.decisionStatus) {
+    case 'approved':
+      return 'Dispatcher approved the proposed route';
+    case 'updated_proposal':
+      return 'Updated route proposal is ready for review';
+    case 'adjustment_requested':
+      return 'Adjustment request is being applied';
+    case 'proposed':
+    default:
+      return 'Route proposal is ready for dispatcher review';
+  }
+}
+
+function deriveDecisionEvidence(result: OptimizationResult, adjustmentRequest?: AdjustmentRequest): string[] {
+  const evidence = (result.logs ?? []).map(sanitizeReasoningLine).filter(Boolean).slice(0, 3);
+  const notes: string[] = [];
+
+  if (adjustmentRequest) {
+    notes.push(`Updated after dispatcher request: ${adjustmentRequest.label}.`);
+  }
+  if (result.geofences?.length) {
+    notes.push(`The proposal avoids ${result.geofences.length} blocked corridor${result.geofences.length === 1 ? '' : 's'} drawn on the live map.`);
+  }
+  if (result.routeWarnings?.length) {
+    notes.push(result.routeWarnings[0]);
+  }
+
+  return [...notes, ...evidence].slice(0, 4);
+}
+
+function buildDecisionSummary(result: OptimizationResult, adjustmentRequest?: AdjustmentRequest): DecisionSummary {
+  const comparison = result.comparison;
+  const metrics = result.metrics.optimized;
+  return {
+    title: routeHeadline(result),
+    summary:
+      comparison?.headline === 'Route validated'
+        ? `ReasonRoute AI re-checked the plan and found no materially better alternative under the current constraints.`
+        : `${result.optimizedRoutes.length} route${result.optimizedRoutes.length === 1 ? '' : 's'} selected with ${metrics.time.toFixed(1)} min ETA, ${metrics.distance.toFixed(1)} km, and ${metrics.emissions.toFixed(2)} kg CO2.`,
+    evidence: deriveDecisionEvidence(result, adjustmentRequest),
+    reviewPrompt:
+      result.decisionStatus === 'approved'
+        ? 'Approved for dispatch.'
+        : 'Review the route rationale below before approving or requesting an adjustment.',
+    changeLabel: adjustmentRequest?.label,
+  };
+}
+
+function snapshotProposal(result: OptimizationResult): ProposalSnapshot {
+  return {
+    decisionStatus: result.decisionStatus ?? 'proposed',
+    comparison: result.comparison,
+    metrics: result.metrics,
+    decisionSummary: result.decisionSummary,
+    adjustmentRequest: result.adjustmentRequest,
+  };
+}
+
+function withDecisionSummary(
+  result: OptimizationResult,
+  options: {
+    decisionStatus?: OptimizationResult['decisionStatus'];
+    adjustmentRequest?: AdjustmentRequest;
+    previousProposal?: ProposalSnapshot;
+  } = {}
+): OptimizationResult {
+  const next: OptimizationResult = {
+    ...result,
+    decisionStatus: options.decisionStatus ?? result.decisionStatus ?? 'proposed',
+    adjustmentRequest: options.adjustmentRequest,
+    previousProposal: options.previousProposal ?? result.previousProposal,
+  };
+  return {
+    ...next,
+    decisionSummary: buildDecisionSummary(next, options.adjustmentRequest),
+  };
+}
+
+function normalizePlanningInputs(result: OptimizationResult): PlanningInputs | undefined {
+  if (result.planningInputs?.stopsText?.trim()) {
+    return result.planningInputs;
+  }
+  if (!Array.isArray(result.nodes) || result.nodes.length === 0) return undefined;
+  return {
+    stopsText: toStopsText(result.nodes),
+    preferences: undefined,
+    optimization: undefined,
+    fleet: result.fleetConfig,
+  };
+}
+
+function applyAdjustmentToInputs(inputs: PlanningInputs, adjustmentRequest: AdjustmentRequest): PlanningInputs {
+  const currentPreferences = inputs.preferences ?? {};
+  const currentOptimization = inputs.optimization ?? {};
+
+  switch (adjustmentRequest.type) {
+    case 'prioritize_eta':
+      return {
+        ...inputs,
+        preferences: { weightTime: 0.8, weightDistance: 0.1, weightEmissions: 0.1 },
+        optimization: {
+          ...currentOptimization,
+          mode: 'quality',
+          timeBudgetMs: Math.max(currentOptimization.timeBudgetMs ?? 40, 120),
+        },
+      };
+    case 're_evaluate':
+      return {
+        ...inputs,
+        preferences: {
+          weightTime: currentPreferences.weightTime ?? 0.55,
+          weightDistance: currentPreferences.weightDistance ?? 0.25,
+          weightEmissions: currentPreferences.weightEmissions ?? 0.2,
+        },
+        optimization: {
+          ...currentOptimization,
+          mode: 'quality',
+          timeBudgetMs: Math.max(currentOptimization.timeBudgetMs ?? 40, 180),
+        },
+      };
+    case 'simplify_route':
+      return {
+        ...inputs,
+        preferences: { weightTime: 0.45, weightDistance: 0.4, weightEmissions: 0.15 },
+        optimization: {
+          ...currentOptimization,
+          mode: 'quality',
+          timeBudgetMs: Math.max(currentOptimization.timeBudgetMs ?? 40, 100),
+        },
+      };
+    case 'avoid_blocked_corridor':
+    default:
+      return inputs;
+  }
 }
 
 function buildImprovement(baseline: Metrics, optimized: Metrics) {
@@ -149,24 +294,35 @@ function aggregateRouteMetrics(routes: FleetRoutePlan[]): Metrics {
 
 function buildComparison(baseline: Metrics, optimized: Metrics): FleetComparison {
   const improvement = buildImprovement(baseline, optimized);
+  if (
+    Math.abs(improvement.timePct) < 0.1 &&
+    Math.abs(improvement.distancePct) < 0.1 &&
+    Math.abs(improvement.emissionsPct) < 0.1
+  ) {
+    return {
+      status: 'validated',
+      headline: 'Route validated',
+      detail: 'No materially better alternative was found under the current constraints.',
+    };
+  }
   if (improvement.timePct > 0 || (improvement.timePct === 0 && (improvement.distancePct > 0 || improvement.emissionsPct > 0))) {
     return {
       status: 'improved',
-      headline: 'Fleet plan improved',
+      headline: 'Proposed route outperformed the baseline',
       detail: `Time ${improvement.timePct}% better, distance ${improvement.distancePct}% better, emissions ${improvement.emissionsPct}% better.`,
     };
   }
   if (improvement.timePct < 0) {
     return {
       status: 'worsened',
-      headline: 'Fleet plan worsened',
-      detail: `Road-level traffic evaluation erased the ordering gain. Time moved ${Math.abs(improvement.timePct)}% in the wrong direction.`,
+      headline: 'Route needs dispatcher review',
+      detail: `Road-level traffic evaluation weakened the initial gain. Time moved ${Math.abs(improvement.timePct)}% in the wrong direction.`,
     };
   }
   return {
     status: 'mixed',
-    headline: 'Fleet result is mixed',
-    detail: `Some fleet metrics improved while others stayed flat or regressed. Time ${improvement.timePct}%, distance ${improvement.distancePct}%, emissions ${improvement.emissionsPct}%.`,
+    headline: 'Route trade-offs are balanced',
+    detail: `Some metrics improved while others stayed flat. Time ${improvement.timePct}%, distance ${improvement.distancePct}%, emissions ${improvement.emissionsPct}%.`,
   };
 }
 
@@ -208,6 +364,7 @@ function buildDiagnostics(result: OptimizationResult): RouteDiagnostics {
     geofenceImpact,
     provider: primaryProvider,
     trafficMode: allRoads.some(road => road.source === 'mapbox') ? 'historical_or_live' : 'freeflow',
+    optimizationTimeMs: result.optimizationTimeMs,
     warnings: [...new Set(allRoads.flatMap(road => road.warnings ?? []))],
   };
 }
@@ -265,10 +422,16 @@ function fleetGeojsonFeatures(result: OptimizationResult) {
   return features;
 }
 
-async function applyRoadRouting(result: OptimizationResult, geofences: Geofence[] = []): Promise<OptimizationResult> {
+async function applyRoadRouting(
+  result: OptimizationResult,
+  geofences: Geofence[] = [],
+  adjustmentRequest?: AdjustmentRequest,
+  previousProposal?: ProposalSnapshot
+): Promise<OptimizationResult> {
   const fleetConfig = normalizeFleetConfig(result);
   const baselinePaths = result.baselineRoutes?.length ? result.baselineRoutes.map(route => route.path) : [result.baselinePath];
   const optimizedPaths = result.optimizedRoutes?.length ? result.optimizedRoutes.map(route => route.path) : [result.aiOptimizedPath ?? result.optimizedPath];
+  const roadRoutingStartedAt = Date.now();
 
   if (result.coordinateMode !== 'geo') {
     const nodeMap = new Map(result.nodes.map(node => [node.id, node]));
@@ -293,13 +456,21 @@ async function applyRoadRouting(result: OptimizationResult, geofences: Geofence[
       },
       comparison: buildComparison(baselineMetrics, optimizedMetrics),
     };
-    return {
+    const diagnostics = buildDiagnostics(next);
+    diagnostics.roadRoutingTimeMs = Date.now() - roadRoutingStartedAt;
+    diagnostics.totalProcessingTimeMs = (result.optimizationTimeMs ?? 0) + (diagnostics.roadRoutingTimeMs ?? 0);
+    diagnostics.dispatcherReady = (diagnostics.totalProcessingTimeMs ?? 0) <= 30_000;
+    return withDecisionSummary({
       ...next,
-      diagnostics: buildDiagnostics(next),
+      diagnostics,
       baselineRoad: baselineRoutes[0]?.road ?? null,
       optimizedRoad: optimizedRoutes[0]?.road ?? null,
-      routeWarnings: next.diagnostics?.warnings ?? [],
-    };
+      routeWarnings: diagnostics.warnings,
+    }, {
+      decisionStatus: adjustmentRequest ? 'updated_proposal' : result.decisionStatus ?? 'proposed',
+      adjustmentRequest,
+      previousProposal,
+    });
   }
 
   const baselineRoutes = await buildFleetRoutePlans(result.nodes as Node[], baselinePaths, geofences, fleetConfig);
@@ -321,13 +492,20 @@ async function applyRoadRouting(result: OptimizationResult, geofences: Geofence[
     },
   };
   const diagnostics = buildDiagnostics(diagnosticsSeed);
+  diagnostics.roadRoutingTimeMs = Date.now() - roadRoutingStartedAt;
+  diagnostics.totalProcessingTimeMs = (result.optimizationTimeMs ?? 0) + (diagnostics.roadRoutingTimeMs ?? 0);
+  diagnostics.dispatcherReady = (diagnostics.totalProcessingTimeMs ?? 0) <= 30_000;
 
-  return {
+  return withDecisionSummary({
     ...diagnosticsSeed,
     comparison: buildComparison(baselineMetrics, optimizedMetrics),
     diagnostics,
     routeWarnings: diagnostics.warnings,
-  };
+  }, {
+    decisionStatus: adjustmentRequest ? 'updated_proposal' : result.decisionStatus ?? 'proposed',
+    adjustmentRequest,
+    previousProposal,
+  });
 }
 
 app.get('/health', (_req, res) => {
@@ -410,15 +588,44 @@ app.post(['/optimize', '/api/optimize'], async (req, res) => {
 
 app.post(['/reroute', '/api/reroute'], async (req, res) => {
   try {
-    const { result, geofences } = req.body ?? {};
+    const { result, geofences, adjustmentRequest } = req.body ?? {};
     if (!result || !Array.isArray(result.nodes) || !Array.isArray(result.baselinePath) || !Array.isArray(result.optimizedPath)) {
       return res.status(400).json({ error: 'A prior optimization result payload is required.' });
     }
+    const previousProposal = snapshotProposal(result as OptimizationResult);
+    const nextGeofences = Array.isArray(geofences) ? geofences : result.geofences ?? [];
+    let rerouted: OptimizationResult;
 
-    const rerouted = await applyRoadRouting(
-      result as OptimizationResult,
-      Array.isArray(geofences) ? geofences : result.geofences ?? []
-    );
+    if (adjustmentRequest?.type && adjustmentRequest.type !== 'avoid_blocked_corridor') {
+      const planningInputs = normalizePlanningInputs(result as OptimizationResult);
+      if (!planningInputs?.stopsText) {
+        return res.status(400).json({ error: 'The current result does not include enough planning context to apply that adjustment.' });
+      }
+      const adjustedInputs = applyAdjustmentToInputs(planningInputs, adjustmentRequest as AdjustmentRequest);
+      const nextBaseResult = await optimizeRoute(
+        adjustedInputs.stopsText,
+        [],
+        adjustedInputs.preferences,
+        adjustedInputs.optimization,
+        adjustedInputs.fleet
+      );
+      rerouted = await applyRoadRouting(
+        {
+          ...(nextBaseResult as unknown as OptimizationResult),
+          planningInputs: adjustedInputs,
+        },
+        nextGeofences,
+        adjustmentRequest as AdjustmentRequest,
+        previousProposal
+      );
+    } else {
+      rerouted = await applyRoadRouting(
+        result as OptimizationResult,
+        nextGeofences,
+        adjustmentRequest as AdjustmentRequest | undefined,
+        previousProposal
+      );
+    }
 
     res.json({
       ok: true,

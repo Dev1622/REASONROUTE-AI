@@ -76,6 +76,10 @@ export interface RouteDiagnostics {
   geofenceImpact: 'none' | 'detoured' | 'blocked_fallback';
   provider?: 'osrm' | 'mapbox' | 'synthetic' | 'demo';
   trafficMode?: 'historical_or_live' | 'freeflow';
+  optimizationTimeMs?: number;
+  roadRoutingTimeMs?: number;
+  totalProcessingTimeMs?: number;
+  dispatcherReady?: boolean;
   warnings: string[];
 }
 
@@ -133,9 +137,46 @@ export interface FleetRoutePlan {
 }
 
 export interface FleetComparison {
-  status: 'improved' | 'worsened' | 'mixed';
+  status: 'improved' | 'worsened' | 'mixed' | 'validated';
   headline: string;
   detail: string;
+}
+
+export type DecisionStatus = 'proposed' | 'approved' | 'adjustment_requested' | 'updated_proposal';
+
+export type AdjustmentType = 'prioritize_eta' | 're_evaluate' | 'simplify_route' | 'avoid_blocked_corridor';
+
+export interface AdjustmentRequest {
+  type: AdjustmentType;
+  label: string;
+  note?: string;
+}
+
+export interface DecisionSummary {
+  title: string;
+  summary: string;
+  evidence: string[];
+  reviewPrompt?: string;
+  changeLabel?: string;
+}
+
+export interface PlanningInputs {
+  stopsText: string;
+  preferences?: { weightTime?: number; weightEmissions?: number; weightDistance?: number };
+  optimization?: { mode?: 'fast' | 'quality'; timeBudgetMs?: number; baselineMode?: 'dynamic' | 'distance' };
+  fleet?: FleetConfig;
+}
+
+export interface ProposalSnapshot {
+  decisionStatus: DecisionStatus;
+  comparison?: FleetComparison;
+  metrics: {
+    baseline: Metrics;
+    optimized: Metrics;
+    improvement: Improvement;
+  };
+  decisionSummary?: DecisionSummary;
+  adjustmentRequest?: AdjustmentRequest;
 }
 
 export interface OptimizationResult {
@@ -157,10 +198,16 @@ export interface OptimizationResult {
   manualRouteOrder?: string[];
   validation?: ValidationSummary;
   routeWarnings?: string[];
+  optimizationTimeMs?: number;
   routeSummary?: RouteSummary;
   diagnostics?: RouteDiagnostics;
   displayFilters?: DisplayFilters;
   routeFocus?: RouteFocus;
+  decisionStatus?: DecisionStatus;
+  decisionSummary?: DecisionSummary;
+  adjustmentRequest?: AdjustmentRequest;
+  previousProposal?: ProposalSnapshot;
+  planningInputs?: PlanningInputs;
   metrics: {
     baseline: Metrics;
     optimized: Metrics;

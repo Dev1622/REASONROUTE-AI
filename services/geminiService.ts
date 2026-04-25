@@ -7,7 +7,7 @@ import {
   EngineResult,
   CompressionPattern,
 } from "./reasonRouteEngine";
-import { FleetComparison, FleetConfig, FleetRoutePlan, Geofence, RoutedRoad, ValidationSummary } from "../types";
+import { AdjustmentRequest, DecisionStatus, DecisionSummary, FleetComparison, FleetConfig, FleetRoutePlan, Geofence, PlanningInputs, ProposalSnapshot, RoutedRoad, ValidationSummary } from "../types";
 
 ensureLocalEnvLoaded();
 
@@ -67,6 +67,12 @@ export type OptimizationResult = {
   manualRouteOrder?: string[];
   validation?: ValidationSummary;
   routeWarnings?: string[];
+  optimizationTimeMs?: number;
+  decisionStatus?: DecisionStatus;
+  decisionSummary?: DecisionSummary;
+  adjustmentRequest?: AdjustmentRequest;
+  previousProposal?: ProposalSnapshot;
+  planningInputs?: PlanningInputs;
   logs: string[];
   engineLogs: string[];
   metrics: {
@@ -107,7 +113,7 @@ type ParseStopsResult = {
 };
 
 function normalizeFleetConfig(fleet: FleetConfig | undefined, stopCount: number): FleetConfig {
-  const requestedCount = Math.max(2, Math.min(5, Math.round(fleet?.vehicleCount ?? 3)));
+  const requestedCount = Math.max(2, Math.min(25, Math.round(fleet?.vehicleCount ?? 3)));
   const vehicleCount = Math.max(1, Math.min(requestedCount, Math.max(stopCount, 1)));
   const vehicleLabels = Array.from({ length: vehicleCount }, (_, index) => {
     const raw = fleet?.vehicleLabels?.[index]?.trim();
@@ -519,7 +525,9 @@ export const optimizeRoute = async (
     },
   };
 
+  const optimizationStartedAt = Date.now();
   const engineResult = runReasonRouteEngine(engineInput);
+  const optimizationTimeMs = Date.now() - optimizationStartedAt;
   const projectedDisruptions = coordinateMode === "geo" ? projectDisruptionsToGeo(disruptions, nodes) : disruptions;
   const reasoningLog = await generateReasoningLog(nodes, engineResult, projectedDisruptions);
   const toKg = (g: number) => +(g / 1000).toFixed(3);
@@ -545,6 +553,14 @@ export const optimizeRoute = async (
     manualRouteOrder: undefined,
     validation,
     routeWarnings: [],
+    optimizationTimeMs,
+    decisionStatus: "proposed",
+    planningInputs: {
+      stopsText: stopsInput,
+      preferences,
+      optimization,
+      fleet,
+    },
     logs: reasoningLog,
     engineLogs: engineResult.engineLogs,
     metrics: {

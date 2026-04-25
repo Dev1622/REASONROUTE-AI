@@ -1728,6 +1728,66 @@ function improveInterRouteMoves(
   return out;
 }
 
+function orderedBinsFromSequence(
+  orderedCustomers: string[],
+  vehicleCount: number,
+  vehicleCapacity: number,
+  demands: Map<string, number>
+): string[][] | undefined {
+  const bins: string[][] = Array.from({ length: vehicleCount }, () => []);
+  const loads = Array<number>(vehicleCount).fill(0);
+  const totalDemand = orderedCustomers.reduce((sum, customerId) => sum + (demands.get(customerId) ?? 0), 0);
+  const baseTarget = Math.floor(totalDemand / Math.max(vehicleCount, 1));
+  const remainder = totalDemand % Math.max(vehicleCount, 1);
+  const targetLoads = Array.from({ length: vehicleCount }, (_, index) => baseTarget + (index < remainder ? 1 : 0));
+  let cursor = 0;
+
+  for (const id of orderedCustomers) {
+    const demand = demands.get(id) ?? 0;
+    while (cursor < vehicleCount - 1 && loads[cursor] > 0 && loads[cursor] >= targetLoads[cursor]) {
+      cursor += 1;
+    }
+
+    if (loads[cursor] + demand > vehicleCapacity) {
+      if (cursor >= vehicleCount - 1) return undefined;
+      cursor += 1;
+      if (loads[cursor] + demand > vehicleCapacity) return undefined;
+    }
+
+    bins[cursor].push(id);
+    loads[cursor] += demand;
+  }
+
+  return bins;
+}
+
+function buildSweepOrders(
+  allCustomers: string[],
+  depotId: string,
+  nodeMap: Map<string, Node>
+): string[][] {
+  const depot = nodeMap.get(depotId);
+  if (!depot) return [allCustomers];
+
+  const angleSorted = [...allCustomers].sort((aId, bId) => {
+    const a = nodeMap.get(aId);
+    const b = nodeMap.get(bId);
+    if (!a || !b) return 0;
+    const angleA = Math.atan2(a.y - depot.y, a.x - depot.x);
+    const angleB = Math.atan2(b.y - depot.y, b.x - depot.x);
+    return angleA - angleB;
+  });
+
+  const orders: string[][] = [angleSorted, [...angleSorted].reverse()];
+  const rotationCount = Math.min(6, Math.max(1, Math.floor(angleSorted.length / 12)));
+  for (let rotation = 1; rotation <= rotationCount; rotation++) {
+    const offset = Math.floor((rotation / (rotationCount + 1)) * angleSorted.length);
+    if (offset <= 0 || offset >= angleSorted.length) continue;
+    orders.push([...angleSorted.slice(offset), ...angleSorted.slice(0, offset)]);
+  }
+  return orders;
+}
+
 function buildBenchmarkConstrainedRoutes(
   finalPath: string[],
   allNodes: Node[],
@@ -1768,48 +1828,46 @@ function buildBenchmarkConstrainedRoutes(
 
   const seed = finalPath.filter(id => id !== depotId && allCustomers.includes(id));
   const seenSeed = new Set(seed);
-  const order = [...seed, ...allCustomers.filter(id => !seenSeed.has(id))];
-  const bins: string[][] = Array.from({ length: benchmark.vehicleCount }, () => []);
-  const loads = Array<number>(benchmark.vehicleCount).fill(0);
+  const seededOrder = [...seed, ...allCustomers.filter(id => !seenSeed.has(id))];
+  const candidateOrders = [seededOrder, ...buildSweepOrders(allCustomers, depotId, nodeMap)];
 
-  for (const id of order) {
-    const d = demands.get(id) ?? 0;
-    let best = -1;
-    let bestSlack = Number.POSITIVE_INFINITY;
-    for (let k = 0; k < bins.length; k++) {
-      if (loads[k] + d > benchmark.vehicleCapacity) continue;
-      const slack = benchmark.vehicleCapacity - (loads[k] + d);
-      if (slack < bestSlack) {
-        best = k;
-        bestSlack = slack;
-      }
+  let bestSplit: BenchmarkSplit | undefined;
+  for (const [candidateIndex, order] of candidateOrders.entries()) {
+    const bins = orderedBinsFromSequence(order, benchmark.vehicleCount, benchmark.vehicleCapacity, demands);
+    if (!bins) {
+      logs.push(`[Benchmark] Candidate split ${candidateIndex + 1} failed packing.`);
+      continue;
     }
-    if (best < 0) {
-      logs.push(`[Benchmark] Packing failed for ${id}.`);
-      return undefined;
+
+    let routes = bins.map(members => nearestOrderFromSeed(members, depotId, nodeMap));
+    routes = routes.map(r => benchmarkTwoOpt(r, nodeMap));
+    routes = improveInterRouteMoves(routes, depotId, demands, benchmark.vehicleCapacity, nodeMap);
+    routes = routes.map(r => benchmarkTwoOpt(r, nodeMap));
+
+    if (!isFeasibleBenchmarkRoutes(
+      routes,
+      allCustomers,
+      depotId,
+      benchmark.vehicleCount,
+      benchmark.vehicleCapacity,
+      demands
+    )) {
+      logs.push(`[Benchmark] Candidate split ${candidateIndex + 1} failed feasibility checks.`);
+      continue;
     }
-    bins[best].push(id);
-    loads[best] += d;
+
+    const totalCost = totalBenchmarkCost(routes, nodeMap);
+    if (!bestSplit || totalCost + 1e-9 < bestSplit.totalCost) {
+      bestSplit = { routes, totalCost };
+    }
   }
 
-  let routes = bins.map(members => nearestOrderFromSeed(members, depotId, nodeMap));
-  routes = routes.map(r => benchmarkTwoOpt(r, nodeMap));
-  routes = improveInterRouteMoves(routes, depotId, demands, benchmark.vehicleCapacity, nodeMap);
-  routes = routes.map(r => benchmarkTwoOpt(r, nodeMap));
-
-  if (!isFeasibleBenchmarkRoutes(
-    routes,
-    allCustomers,
-    depotId,
-    benchmark.vehicleCount,
-    benchmark.vehicleCapacity,
-    demands
-  )) {
+  if (!bestSplit) {
     logs.push("[Benchmark] Generated routes failed feasibility checks.");
     return undefined;
   }
 
-  return { routes, totalCost: totalBenchmarkCost(routes, nodeMap) };
+  return bestSplit;
 }
 
 export function runReasonRouteEngine(input: EngineInput): EngineResult {

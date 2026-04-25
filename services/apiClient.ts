@@ -1,4 +1,4 @@
-import { AppConfigStatus, FleetConfig, Geofence, OptimizationResult } from '../types';
+import { AdjustmentRequest, AppConfigStatus, FleetConfig, Geofence, OptimizationResult } from '../types';
 
 type ImagePayload = { base64: string; mimeType: string };
 
@@ -15,6 +15,7 @@ type ReroutePayload = {
   result: OptimizationResult;
   geofences?: Geofence[];
   manualRouteOrder?: string[];
+  adjustmentRequest?: AdjustmentRequest;
 };
 
 async function postJson<T>(path: string, payload: unknown): Promise<T> {
