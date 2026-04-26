@@ -1,0 +1,147 @@
+SHADOW PILOT - DONE SO FAR
+
+Purpose:
+Capture what has already been implemented or prepared so far for the ReasonRoute AI shadow pilot, separate from what is still pending.
+
+Core framing:
+ReasonRoute AI remains focused on explainable AI routing for dispatchers.
+The work completed so far strengthens route understanding, review, rerouting, and evidence sharing.
+
+========================================
+ALREADY PREPARED
+========================================
+
+1. SHADOW PILOT PLANNING FILES
+- Created and organized shadow-pilot-related notes in the checklist folder.
+- Added:
+  - pilot_yet_to_be_done.txt
+  - shadow_pilot_mandatory.txt
+  - feature_timing_notes.txt
+  - shadow_pilot_final_features_list.txt
+
+2. PRODUCT POSITIONING ALIGNMENT
+- Reframed the product around explainable AI routing instead of generic fleet-planner language.
+- Kept the product goal centered on:
+  - proposing routes
+  - explaining why they were chosen
+  - reducing blind dispatcher overrides
+
+========================================
+IMPLEMENTED IN PRODUCT
+========================================
+
+3. ROUTE REVIEW FOUNDATION
+- Route results are presented as a proposal rather than an unexplained final answer.
+- Existing route decision states are in place:
+  - proposed
+  - approved
+  - updated_proposal
+- Dispatcher approval flow exists in the app.
+
+4. EXPLAINABLE ROUTE OUTPUT
+- "Why This Route" reasoning is surfaced as a product-facing explanation layer.
+- Decision summary and evidence fields are carried in the result model.
+- Raw debug logs are still available but separated from the main explanation view.
+
+5. DISPATCHER ADJUSTMENT FLOW
+- Dispatcher adjustment requests are supported in the app flow.
+- Adjustment preview flow has been added before final confirmation.
+- Previous proposal context is preserved for comparison.
+- Blocked corridor requests remain part of the reroute workflow.
+
+6. TRIBAL KNOWLEDGE TAGS
+- Fixed quick-click dispatcher tags have been added to the adjustment flow.
+- Current tags include:
+  - School Zone Traffic
+  - Bridge / Trailer Constraint
+  - Customer Dock Access
+  - Driver Preference
+- Optional note text is supported alongside the selected tag.
+
+7. OVERRIDE COST DELTA
+- Override delta support has been added to the product data model.
+- Adjustment preview now surfaces tradeoff-oriented delta information before confirmation.
+- Delta is expressed through route change context such as time, distance, emissions, and estimated fuel-cost impact.
+
+8. DRIVER-FACING ONE-LINE EXPLANATION
+- Driver-facing one-line explanation support has been added to the result/export model.
+- Driver explanation is included in route summary/export flow rather than requiring a separate driver app.
+
+9. PILOT EVIDENCE / REPORTING SUPPORT
+- In-session pilot reporting fields have been added.
+- Pilot summary support now includes:
+  - run count
+  - reroute count
+  - approved count
+  - fallback rate
+  - distance delta
+  - time delta
+  - emissions delta
+- These fields are intended for shadow-pilot evidence and share-back reporting.
+
+10. EXPORT IMPROVEMENTS
+- Export flow includes route decision-oriented summary artifacts.
+- Decision-related fields now flow into exports, including:
+  - decision status
+  - adjustment request
+  - override delta
+  - driver-facing explanation
+  - pilot report summary
+
+11. INPUT VALIDATION HARDENING
+- Shadow-pilot-oriented input validation has been strengthened in frontend and API flow.
+- Current validation work covers:
+  - missing stop label
+  - duplicate stop labels
+  - invalid coordinates
+  - incomplete coordinate rows
+  - depot/warehouse-first expectation
+
+12. FALLBACK-AWARE MESSAGING
+- Comparison/explanation messaging has been softened for fallback-routing conditions.
+- The system now avoids overconfident ETA language when fallback legs are involved.
+
+13. PREMIUM UX DIRECTION IN PRODUCT
+- The route-review workflow remains the main visible focus.
+- Lower-tier information is being grouped into a calmer evidence/support structure.
+- Premium interaction ideas have been carried into the implementation direction, including map-level active-route polish.
+
+========================================
+TECHNICAL STATUS
+========================================
+
+14. SHARED TYPES / DATA MODEL
+- Types have been extended to support shadow-pilot review and reporting fields.
+- Shared model now includes support for:
+  - adjustment reason codes
+  - override delta
+  - driver message
+  - pilot report snapshot
+
+15. API FLOW
+- Optimize and reroute flows continue to use the existing API shape.
+- Reroute payload now supports preview-oriented adjustment handling.
+- Planning context is preserved for later reroute/explanation use.
+
+16. TYPECHECK STATUS
+- npx tsc --noEmit passes on the current implementation state.
+
+========================================
+IMPORTANT REALITY CHECK
+========================================
+
+What this means:
+- A large part of the planned shadow-pilot feature build has been implemented in code.
+- The product is now much closer to a true shadow-pilot build than before.
+
+What this does NOT mean yet:
+- It is not yet fully proven ready for an actual organization-facing shadow pilot.
+
+Still not fully validated yet:
+- real organization dataset testing
+- browser-level end-to-end acceptance testing
+- export/report verification with pilot-style runs
+- repeatability and operational runbook validation
+
+Best current description:
+ReasonRoute AI is now a strong near-ready shadow-pilot candidate with much of the planned feature set implemented, but it still needs real-data validation before it can be called fully shadow-pilot ready.
