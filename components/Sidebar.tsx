@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, Download, FileJson, Play, RefreshCcw, Sparkles, Terminal, Upload, X } from 'lucide-react';
 import clsx from 'clsx';
 import * as XLSX from 'xlsx';
-import { AdjustmentReasonCode, AdjustmentRequest, AppConfigStatus, FleetConfig, FleetRoutePlan, OptimizationResult, OverrideDelta, ProcessingStatus } from '../types';
+import { AdjustmentReasonCode, AdjustmentRequest, AppConfigStatus, FleetConfig, FleetRoutePlan, OptimizationResult, ProcessingStatus } from '../types';
 
 interface SidebarProps {
   onOptimize: (
@@ -13,10 +13,13 @@ interface SidebarProps {
     fleet?: FleetConfig
   ) => void;
   onApprove: () => void;
-  onRequestAdjustment: (adjustmentRequest: AdjustmentRequest) => void;
+  onPreviewAdjustment: (adjustmentRequest: AdjustmentRequest) => void;
+  onConfirmAdjustment: () => void;
+  onCancelAdjustmentPreview: () => void;
   onSelectRoute: (routeId?: string) => void;
   status: ProcessingStatus;
   result: OptimizationResult | null;
+  previewActive: boolean;
   history: { ts: string; improvement: { distancePct: number; timePct: number; emissionsPct: number }; baseline: number; optimized: number; vehicles: number; fallbackLegCount: number; rerouted: boolean; timeDelta: number; emissionsDelta: number }[];
   errorMessage?: string | null;
   configStatus: AppConfigStatus | null;
@@ -25,8 +28,7 @@ interface SidebarProps {
 const SAMPLE_SCENARIOS = [
   {
     label: 'Geo demo',
-    value: `Stop, Lat, Lng
-Warehouse Hub, 12.9716, 77.5946
+    value: `Warehouse Hub, 12.9716, 77.5946
 Indiranagar Drop, 12.9784, 77.6408
 Koramangala Stop, 12.9352, 77.6245
 HSR Layout Stop, 12.9116, 77.6474
@@ -81,6 +83,7 @@ function buildFleetSummary(result: OptimizationResult) {
     adjustmentRequest: result.adjustmentRequest,
     overrideDelta: result.overrideDelta,
     driverMessage: result.driverMessage,
+    pilotReport: result.pilotReport,
     fleetConfig: result.fleetConfig,
     comparison: result.comparison,
     metrics: result.metrics,
@@ -152,6 +155,11 @@ function validateStopsTextInput(source: string) {
     return issues;
   }
 
+  const firstParts = lines[0].split(',').map(part => part.trim());
+  if (firstParts[0] && !/(depot|warehouse|hub)/i.test(firstParts[0])) {
+    issues.push('First row should be the depot or warehouse for shadow-pilot routing.');
+  }
+
   const labels = new Set<string>();
   lines.forEach((line, index) => {
     const parts = line.split(',').map(part => part.trim());
@@ -178,38 +186,6 @@ function validateStopsTextInput(source: string) {
   });
 
   return Array.from(new Set(issues));
-}
-
-function buildPreviewDelta(result: OptimizationResult, adjustment: AdjustmentRequest): OverrideDelta {
-  const current = result.metrics.optimized;
-  const presets: Record<string, { time: number; distance: number; emissions: number }> = {
-    prioritize_eta: { time: -4.5, distance: 2.1, emissions: 0.18 },
-    re_evaluate: { time: -2.2, distance: 0.9, emissions: 0.06 },
-    simplify_route: { time: 1.5, distance: -1.6, emissions: -0.09 },
-    avoid_blocked_corridor: { time: 4.8, distance: 2.8, emissions: 0.21 },
-  };
-  const preset = presets[adjustment.type] ?? { time: 0, distance: 0, emissions: 0 };
-  const estimatedFuelCost = +(preset.distance * 0.72).toFixed(2);
-  const direction: OverrideDelta['direction'] =
-    preset.time === 0 && preset.distance === 0 && preset.emissions === 0
-      ? 'flat'
-      : preset.time <= 0 && preset.distance <= 0 && preset.emissions <= 0
-        ? 'better'
-        : preset.time >= 0 && preset.distance >= 0 && preset.emissions >= 0
-          ? 'worse'
-          : 'mixed';
-
-  return {
-    timeMin: +preset.time.toFixed(1),
-    distanceKm: +preset.distance.toFixed(2),
-    emissionsKg: +preset.emissions.toFixed(3),
-    estimatedFuelCost,
-    direction,
-    summary:
-      direction === 'flat'
-        ? 'This adjustment is expected to keep the proposal materially unchanged.'
-        : `Preview: ${adjustment.label} shifts ETA to ${+(current.time + preset.time).toFixed(1)} min and distance to ${+(current.distance + preset.distance).toFixed(1)} km before confirmation.`,
-  };
 }
 
 const RouteCard: React.FC<{ route: FleetRoutePlan; selected: boolean; tone: 'baseline' | 'optimized'; onClick: () => void }> = ({ route, selected, tone, onClick }) => {
@@ -240,7 +216,7 @@ const RouteCard: React.FC<{ route: FleetRoutePlan; selected: boolean; tone: 'bas
   );
 };
 
-const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjustment, onSelectRoute, status, result, history, errorMessage, configStatus }) => {
+const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjustment, onConfirmAdjustment, onCancelAdjustmentPreview, onSelectRoute, status, result, previewActive, history, errorMessage, configStatus }) => {
   const [stops, setStops] = useState(SAMPLE_SCENARIOS[0].value);
   const [images, setImages] = useState<File[]>([]);
   const [jsonFileName, setJsonFileName] = useState<string | null>(null);
@@ -255,7 +231,6 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
   const [selectedAdjustment, setSelectedAdjustment] = useState<AdjustmentRequest>(ADJUSTMENT_OPTIONS[0]);
   const [selectedTag, setSelectedTag] = useState<AdjustmentReasonCode>('school_zone_traffic');
   const [adjustmentNote, setAdjustmentNote] = useState('');
-  const [pendingAdjustment, setPendingAdjustment] = useState<AdjustmentRequest | null>(null);
   const [importIssues, setImportIssues] = useState<string[]>([]);
   const [evidencePanel, setEvidencePanel] = useState<EvidencePanel>('pilot');
   const logContainerRef = useRef<HTMLDivElement>(null);
@@ -355,7 +330,6 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
   const exportFleetHtml = () => result && downloadText('Route_Decision.html', buildFleetSummaryHtml(result), 'text/html');
   const exportVehicleManifests = () => result && result.optimizedRoutes.forEach(route => downloadText(`${route.vehicleLabel.replace(/\s+/g, '_')}_Manifest.json`, JSON.stringify(buildVehicleManifest(result, route), null, 2), 'application/json'));
   const exportGeojson = () => result && downloadText('Route_Geometry.geojson', JSON.stringify({ type: 'FeatureCollection', features: [...result.baselineRoutes.map(route => routeFeature(result, route, 'baseline')), ...result.optimizedRoutes.map(route => routeFeature(result, route, 'optimized'))] }, null, 2), 'application/json');
-  const previewDelta = result && pendingAdjustment ? buildPreviewDelta(result, pendingAdjustment) : null;
   const pilotReport = result?.pilotReport;
 
   const handleOptimizeClick = () => {
@@ -367,17 +341,11 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
 
   const queueAdjustmentReview = () => {
     if (!result) return;
-    setPendingAdjustment({
+    onPreviewAdjustment({
       ...selectedAdjustment,
       reasonCode: selectedTag,
       note: adjustmentNote.trim() || selectedAdjustment.note,
     });
-  };
-
-  const confirmAdjustment = () => {
-    if (!pendingAdjustment) return;
-    onRequestAdjustment(pendingAdjustment);
-    setPendingAdjustment(null);
   };
 
   return (
@@ -412,7 +380,16 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
             <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Delivery Stops</label>
             <div className="flex items-center gap-2">
               {SAMPLE_SCENARIOS.map(sample => (
-                <button key={sample.label} type="button" className="rounded border border-slate-700 px-2 py-1 font-mono text-[10px] text-slate-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-300" onClick={() => setStops(sample.value)} disabled={isProcessing}>
+                <button
+                  key={sample.label}
+                  type="button"
+                  className="rounded border border-slate-700 px-2 py-1 font-mono text-[10px] text-slate-400 transition-colors hover:border-emerald-500/40 hover:text-emerald-300"
+                  onClick={() => {
+                    setStops(sample.value);
+                    setImportIssues(validateStopsTextInput(sample.value));
+                  }}
+                  disabled={isProcessing}
+                >
                   {sample.label}
                 </button>
               ))}
@@ -525,7 +502,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
           <div className="space-y-3 rounded-md border border-violet-500/20 bg-violet-950/10 p-3">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-violet-300"><Sparkles className="h-3.5 w-3.5" />Route Review</div>
+                <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-violet-300"><Sparkles className="h-3.5 w-3.5" />{previewActive ? 'Adjustment Preview' : 'Route Review'}</div>
                 <div className="mt-2 text-sm font-semibold text-slate-100">{result.decisionSummary?.title ?? 'Route proposal is ready for review'}</div>
                 <div className="mt-1 text-xs text-slate-400">{result.decisionSummary?.summary ?? 'Review the recommendation before approving or requesting a change.'}</div>
               </div>
@@ -570,24 +547,24 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
               className="h-20 w-full resize-none rounded border border-slate-800 bg-slate-950/80 px-3 py-2 text-xs text-slate-300 outline-none focus:border-violet-500"
               placeholder="Optional dispatcher note. Example: avoid the school pickup window near this customer."
             />
-            {pendingAdjustment && previewDelta ? (
+            {previewActive && result.overrideDelta ? (
               <div className="space-y-2 rounded border border-amber-500/30 bg-amber-950/15 p-3 text-xs text-amber-100">
                 <div className="flex items-center justify-between">
                   <div className="font-bold uppercase tracking-wider text-amber-300">Override Cost Delta</div>
-                  <span className="font-mono text-[10px] uppercase tracking-wider text-amber-200">{previewDelta.direction}</span>
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-amber-200">{result.overrideDelta.direction}</span>
                 </div>
-                <div>{previewDelta.summary}</div>
+                <div>{result.overrideDelta.summary}</div>
                 <div className="grid grid-cols-2 gap-2 font-mono text-[11px]">
-                  <div>Time: {previewDelta.timeMin >= 0 ? '+' : ''}{previewDelta.timeMin.toFixed(1)} min</div>
-                  <div>Distance: {previewDelta.distanceKm >= 0 ? '+' : ''}{previewDelta.distanceKm.toFixed(2)} km</div>
-                  <div>Emissions: {previewDelta.emissionsKg >= 0 ? '+' : ''}{previewDelta.emissionsKg.toFixed(3)} kg</div>
-                  <div>Fuel cost: {previewDelta.estimatedFuelCost >= 0 ? '+' : ''}${Math.abs(previewDelta.estimatedFuelCost).toFixed(2)}</div>
+                  <div>Time: {result.overrideDelta.timeMin >= 0 ? '+' : ''}{result.overrideDelta.timeMin.toFixed(1)} min</div>
+                  <div>Distance: {result.overrideDelta.distanceKm >= 0 ? '+' : ''}{result.overrideDelta.distanceKm.toFixed(2)} km</div>
+                  <div>Emissions: {result.overrideDelta.emissionsKg >= 0 ? '+' : ''}{result.overrideDelta.emissionsKg.toFixed(3)} kg</div>
+                  <div>Fuel cost: {result.overrideDelta.estimatedFuelCost >= 0 ? '+' : ''}${Math.abs(result.overrideDelta.estimatedFuelCost).toFixed(2)}</div>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <button type="button" disabled={isProcessing} className="rounded border border-violet-500/40 bg-violet-950/20 px-3 py-2 text-sm font-semibold text-violet-200 transition-colors hover:bg-violet-950/35" onClick={confirmAdjustment}>
+                  <button type="button" disabled={isProcessing} className="rounded border border-violet-500/40 bg-violet-950/20 px-3 py-2 text-sm font-semibold text-violet-200 transition-colors hover:bg-violet-950/35" onClick={onConfirmAdjustment}>
                     Confirm Adjustment
                   </button>
-                  <button type="button" disabled={isProcessing} className="rounded border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm font-semibold text-slate-300 transition-colors hover:bg-slate-800" onClick={() => setPendingAdjustment(null)}>
+                  <button type="button" disabled={isProcessing} className="rounded border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm font-semibold text-slate-300 transition-colors hover:bg-slate-800" onClick={onCancelAdjustmentPreview}>
                     Keep Current Proposal
                   </button>
                 </div>
@@ -596,7 +573,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
-                disabled={isProcessing || result.decisionStatus === 'approved'}
+                disabled={isProcessing || result.decisionStatus === 'approved' || previewActive}
                 className={clsx('flex items-center justify-center rounded border px-3 py-2 text-sm font-semibold transition-colors', result.decisionStatus === 'approved' ? 'border-slate-800 bg-slate-900 text-slate-500' : 'border-emerald-500/40 bg-emerald-950/20 text-emerald-200 hover:bg-emerald-950/35')}
                 onClick={onApprove}
               >
@@ -604,11 +581,11 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
               </button>
               <button
                 type="button"
-                disabled={isProcessing}
+                disabled={isProcessing || previewActive}
                 className="flex items-center justify-center rounded border border-violet-500/40 bg-violet-950/20 px-3 py-2 text-sm font-semibold text-violet-200 transition-colors hover:bg-violet-950/35"
                 onClick={queueAdjustmentReview}
               >
-                <RefreshCcw className="mr-2 h-4 w-4" />Request Adjustment
+                <RefreshCcw className="mr-2 h-4 w-4" />Preview Adjustment
               </button>
             </div>
             <div className="text-[11px] text-slate-500">{result.decisionSummary?.reviewPrompt ?? 'Review the route rationale below before dispatch.'}</div>

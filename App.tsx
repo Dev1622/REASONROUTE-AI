@@ -8,6 +8,7 @@ import { AdjustmentRequest, AppConfigStatus, DisplayFilters, FleetConfig, Geofen
 const App: React.FC = () => {
   const [status, setStatus] = useState<ProcessingStatus>(ProcessingStatus.IDLE);
   const [result, setResult] = useState<OptimizationResult | null>(null);
+  const [previewResult, setPreviewResult] = useState<OptimizationResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [displayFilters, setDisplayFilters] = useState<DisplayFilters>({
     showBaseline: true,
@@ -33,6 +34,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     setResult(prev => (prev ? { ...prev, displayFilters, routeFocus } : prev));
+    setPreviewResult(prev => (prev ? { ...prev, displayFilters, routeFocus } : prev));
   }, [displayFilters, routeFocus]);
 
   const encodeImages = async (images: File[]) =>
@@ -72,6 +74,7 @@ const App: React.FC = () => {
 
   const applyResult = (nextResult: OptimizationResult, overrides?: { rerouteCount?: number; approvalCount?: number }) => {
     const selectedRouteId = routeFocus.selectedRouteId ?? nextResult.optimizedRoutes?.[0]?.routeId;
+    setPreviewResult(null);
     setHistory(prev => {
       const nextHistory = [
         {
@@ -100,6 +103,7 @@ const App: React.FC = () => {
       return nextHistory;
     });
   };
+  const activeResult = previewResult ?? result;
 
   const buildBlockedRoadAdjustment = (currentGeofences: Geofence[] | undefined, nextGeofences: Geofence[]): AdjustmentRequest | undefined => {
     const previousCount = currentGeofences?.length ?? 0;
@@ -107,6 +111,7 @@ const App: React.FC = () => {
       return {
         type: 'avoid_blocked_corridor',
         label: 'Avoid blocked corridor',
+        reasonCode: 'blocked_corridor',
         note: 'Dispatcher marked a corridor to avoid on the live map.',
       };
     }
@@ -123,6 +128,7 @@ const App: React.FC = () => {
     setStatus(ProcessingStatus.ANALYZING);
     setErrorMessage(null);
     setResult(null);
+    setPreviewResult(null);
 
     try {
       const encodedImages = await encodeImages(images);
@@ -142,6 +148,7 @@ const App: React.FC = () => {
   };
 
   const handleApprove = () => {
+    if (previewResult) return;
     setApprovalCount(prev => prev + 1);
     setResult(prev =>
       prev
@@ -166,8 +173,49 @@ const App: React.FC = () => {
     );
   };
 
+  const handlePreviewAdjustment = async (adjustmentRequest: AdjustmentRequest) => {
+    if (!result) return;
+    setStatus(ProcessingStatus.OPTIMIZING);
+    setErrorMessage(null);
+
+    try {
+      const nextPreview = await rerouteViaApi({
+        result,
+        geofences: result.geofences,
+        adjustmentRequest,
+        previewOnly: true,
+      });
+      setPreviewResult({
+        ...nextPreview,
+        pilotReport: result.pilotReport,
+        displayFilters,
+        routeFocus: {
+          ...routeFocus,
+          selectedRouteId: routeFocus.selectedRouteId ?? nextPreview.optimizedRoutes?.[0]?.routeId,
+        },
+      });
+      setStatus(ProcessingStatus.COMPLETE);
+    } catch (error: any) {
+      console.error(error);
+      setErrorMessage(error?.message ?? 'Adjustment preview failed.');
+      setStatus(ProcessingStatus.ERROR);
+    }
+  };
+
+  const handleConfirmPreview = () => {
+    if (!previewResult) return;
+    setRerouteCount(prev => prev + 1);
+    applyResult(previewResult, { rerouteCount: rerouteCount + 1 });
+  };
+
+  const handleCancelPreview = () => {
+    setPreviewResult(null);
+    setStatus(ProcessingStatus.COMPLETE);
+  };
+
   const handleReroute = async (overrides: { geofences?: Geofence[]; adjustmentRequest?: AdjustmentRequest }) => {
     if (!result) return;
+    setPreviewResult(null);
     setStatus(ProcessingStatus.OPTIMIZING);
     setErrorMessage(null);
 
@@ -197,10 +245,13 @@ const App: React.FC = () => {
         <Sidebar
           onOptimize={handleOptimization}
           onApprove={handleApprove}
-          onRequestAdjustment={adjustmentRequest => handleReroute({ adjustmentRequest })}
+          onPreviewAdjustment={handlePreviewAdjustment}
+          onConfirmAdjustment={handleConfirmPreview}
+          onCancelAdjustmentPreview={handleCancelPreview}
           onSelectRoute={selectedRouteId => setRouteFocus(prev => ({ ...prev, selectedRouteId, fitToActiveRoute: true }))}
           status={status}
-          result={result}
+          result={activeResult}
+          previewActive={Boolean(previewResult)}
           history={history}
           errorMessage={errorMessage}
           configStatus={configStatus}
@@ -211,7 +262,7 @@ const App: React.FC = () => {
         <div className="relative flex-1 p-4">
           <div className="h-full w-full overflow-hidden rounded-xl border border-slate-800/50 bg-slate-900/50 shadow-2xl backdrop-blur-sm">
             <MapVisualization
-              data={result}
+              data={activeResult}
               loading={status !== ProcessingStatus.IDLE && status !== ProcessingStatus.COMPLETE && status !== ProcessingStatus.ERROR}
               onGeofencesChange={geofences => handleReroute({ geofences })}
               filters={displayFilters}
@@ -225,7 +276,7 @@ const App: React.FC = () => {
             AI PROPOSAL <span className="text-violet-300">|</span> EXPLAINABLE ROUTING
           </div>
           <div className="pointer-events-none absolute inset-x-6 bottom-6 z-30">
-            {result && result.metrics ? (
+            {activeResult && activeResult.metrics ? (
               <div className="pointer-events-auto rounded-2xl border border-slate-800 bg-slate-900 p-4 shadow-[0_20px_60px_-25px_rgba(0,0,0,0.75)]">
                 <div className="mb-3 flex items-center justify-between">
                   <div className="text-xs font-bold uppercase tracking-wider text-slate-500">Decision Evidence</div>
@@ -239,18 +290,18 @@ const App: React.FC = () => {
                 </div>
                 {metricsCollapsed ? (
                   <div className="flex flex-wrap items-center gap-4 text-sm font-mono text-slate-300">
-                    <span>{result.comparison?.headline ?? 'Route evidence ready'}</span>
-                    <span className="text-slate-500">Distance {result.metrics.optimized.distance.toFixed(1)} km</span>
-                    <span className="text-slate-500">Time {result.metrics.optimized.time.toFixed(1)} min</span>
-                    <span className="text-slate-500">{result.optimizedRoutes.length} routes</span>
+                    <span>{activeResult.comparison?.headline ?? 'Route evidence ready'}</span>
+                    <span className="text-slate-500">Distance {activeResult.metrics.optimized.distance.toFixed(1)} km</span>
+                    <span className="text-slate-500">Time {activeResult.metrics.optimized.time.toFixed(1)} min</span>
+                    <span className="text-slate-500">{activeResult.optimizedRoutes.length} routes</span>
                   </div>
                 ) : (
                   <MetricsDashboard
-                    baseline={result.metrics.baseline}
-                    optimized={result.metrics.optimized}
-                    improvement={result.metrics.improvement}
-                    comparison={result.comparison}
-                    routeCount={result.optimizedRoutes.length}
+                    baseline={activeResult.metrics.baseline}
+                    optimized={activeResult.metrics.optimized}
+                    improvement={activeResult.metrics.improvement}
+                    comparison={activeResult.comparison}
+                    routeCount={activeResult.optimizedRoutes.length}
                   />
                 )}
               </div>

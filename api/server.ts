@@ -130,20 +130,6 @@ function routeHeadline(result: OptimizationResult): string {
   }
 }
 
-function buildDriverMessage(result: OptimizationResult, adjustmentRequest?: AdjustmentRequest): string {
-  const firstEvidence = deriveDecisionEvidence(result, adjustmentRequest)[0];
-  if (adjustmentRequest?.type === 'avoid_blocked_corridor') {
-    return 'Route updated. The proposal now avoids a blocked corridor marked on the live map.';
-  }
-  if (adjustmentRequest) {
-    return `Route updated after dispatcher review. ${adjustmentRequest.label} was applied to refine the proposal.`;
-  }
-  if (firstEvidence) {
-    return `Route selected. ${firstEvidence.replace(/\.$/, '')}.`;
-  }
-  return 'Route selected. ReasonRoute AI chose the clearest route under the current constraints.';
-}
-
 function buildOverrideDelta(previousProposal: ProposalSnapshot | undefined, nextMetrics: OptimizationResult['metrics']['optimized']): OverrideDelta | undefined {
   if (!previousProposal) return undefined;
   const prev = previousProposal.metrics.optimized;
@@ -195,15 +181,25 @@ function deriveDecisionEvidence(result: OptimizationResult, adjustmentRequest?: 
   return [...notes, ...evidence].slice(0, 4);
 }
 
+function buildDriverMessage(result: OptimizationResult, adjustmentRequest?: AdjustmentRequest): string {
+  const evidence = deriveDecisionEvidence(result, adjustmentRequest);
+  const firstReason = evidence[0] ?? 'ReasonRoute selected the clearest route under current conditions.';
+  return `Route update: ${firstReason}`;
+}
+
 function buildDecisionSummary(result: OptimizationResult, adjustmentRequest?: AdjustmentRequest): DecisionSummary {
   const comparison = result.comparison;
   const metrics = result.metrics.optimized;
+  const fallbackSensitive =
+    result.diagnostics?.routingStatus === 'partial_fallback' || result.diagnostics?.routingStatus === 'synthetic_fallback';
   return {
     title: routeHeadline(result),
     summary:
       comparison?.headline === 'Route validated'
         ? `ReasonRoute AI re-checked the plan and found no materially better alternative under the current constraints.`
-        : `${result.optimizedRoutes.length} route${result.optimizedRoutes.length === 1 ? '' : 's'} selected with ${metrics.time.toFixed(1)} min ETA, ${metrics.distance.toFixed(1)} km, and ${metrics.emissions.toFixed(2)} kg CO2.`,
+        : fallbackSensitive
+          ? `${result.optimizedRoutes.length} route${result.optimizedRoutes.length === 1 ? '' : 's'} selected with fallback-aware road evidence. Distance and emissions remain directional; ETA should be reviewed with routing warnings.`
+          : `${result.optimizedRoutes.length} route${result.optimizedRoutes.length === 1 ? '' : 's'} selected with ${metrics.time.toFixed(1)} min ETA, ${metrics.distance.toFixed(1)} km, and ${metrics.emissions.toFixed(2)} kg CO2.`,
     evidence: deriveDecisionEvidence(result, adjustmentRequest),
     reviewPrompt:
       result.decisionStatus === 'approved'
@@ -237,13 +233,15 @@ function withDecisionSummary(
     driverMessage?: string;
   } = {}
 ): OptimizationResult {
+  const overrideDelta = options.overrideDelta ?? (options.previousProposal ? buildOverrideDelta(options.previousProposal, result.metrics.optimized) : result.overrideDelta);
+  const driverMessage = options.driverMessage ?? buildDriverMessage({ ...result, overrideDelta }, options.adjustmentRequest);
   const next: OptimizationResult = {
     ...result,
     decisionStatus: options.decisionStatus ?? result.decisionStatus ?? 'proposed',
     adjustmentRequest: options.adjustmentRequest,
     previousProposal: options.previousProposal ?? result.previousProposal,
-    overrideDelta: options.overrideDelta ?? result.overrideDelta,
-    driverMessage: options.driverMessage ?? result.driverMessage,
+    overrideDelta,
+    driverMessage,
   };
   return {
     ...next,
@@ -449,7 +447,12 @@ function buildComparison(baseline: Metrics, optimized: Metrics): FleetComparison
 
 function softenComparisonForFallback(comparison: FleetComparison, diagnostics: RouteDiagnostics): FleetComparison {
   if (diagnostics.fallbackLegCount === 0) return comparison;
-  if (comparison.status === 'validated') return comparison;
+  if (comparison.status === 'validated') {
+    return {
+      ...comparison,
+      detail: `${comparison.detail} ETA confidence is reduced because some road legs used fallback routing.`,
+    };
+  }
   return {
     ...comparison,
     detail: `${comparison.detail} ETA confidence is softened because ${diagnostics.fallbackLegCount} leg${diagnostics.fallbackLegCount === 1 ? '' : 's'} used fallback road routing.`,
@@ -591,15 +594,18 @@ async function applyRoadRouting(
     diagnostics.roadRoutingTimeMs = Date.now() - roadRoutingStartedAt;
     diagnostics.totalProcessingTimeMs = (result.optimizationTimeMs ?? 0) + (diagnostics.roadRoutingTimeMs ?? 0);
     diagnostics.dispatcherReady = (diagnostics.totalProcessingTimeMs ?? 0) <= 30_000;
-    const overrideDelta = buildOverrideDelta(previousProposal, next.metrics.optimized);
-    const driverMessage = buildDriverMessage(next, adjustmentRequest);
-    return withDecisionSummary({
+    const previewSeed = {
       ...next,
       comparison: softenComparisonForFallback(comparison, diagnostics),
       diagnostics,
+      routeWarnings: diagnostics.warnings,
+    };
+    const overrideDelta = buildOverrideDelta(previousProposal, previewSeed.metrics.optimized);
+    const driverMessage = buildDriverMessage({ ...previewSeed, overrideDelta }, adjustmentRequest);
+    return withDecisionSummary({
+      ...previewSeed,
       baselineRoad: baselineRoutes[0]?.road ?? null,
       optimizedRoad: optimizedRoutes[0]?.road ?? null,
-      routeWarnings: diagnostics.warnings,
     }, {
       decisionStatus: adjustmentRequest ? 'updated_proposal' : result.decisionStatus ?? 'proposed',
       adjustmentRequest,
@@ -632,15 +638,18 @@ async function applyRoadRouting(
   diagnostics.totalProcessingTimeMs = (result.optimizationTimeMs ?? 0) + (diagnostics.roadRoutingTimeMs ?? 0);
   diagnostics.dispatcherReady = (diagnostics.totalProcessingTimeMs ?? 0) <= 30_000;
 
-  const comparison = buildComparison(baselineMetrics, optimizedMetrics);
-  const overrideDelta = buildOverrideDelta(previousProposal, diagnosticsSeed.metrics.optimized);
-  const driverMessage = buildDriverMessage(diagnosticsSeed, adjustmentRequest);
-
-  return withDecisionSummary({
+  const comparison = softenComparisonForFallback(buildComparison(baselineMetrics, optimizedMetrics), diagnostics);
+  const previewSeed = {
     ...diagnosticsSeed,
-    comparison: softenComparisonForFallback(comparison, diagnostics),
+    comparison,
     diagnostics,
     routeWarnings: diagnostics.warnings,
+  };
+  const overrideDelta = buildOverrideDelta(previousProposal, previewSeed.metrics.optimized);
+  const driverMessage = buildDriverMessage({ ...previewSeed, overrideDelta }, adjustmentRequest);
+
+  return withDecisionSummary({
+    ...previewSeed,
   }, {
     decisionStatus: adjustmentRequest ? 'updated_proposal' : result.decisionStatus ?? 'proposed',
     adjustmentRequest,
@@ -746,6 +755,12 @@ app.post(['/reroute', '/api/reroute'], async (req, res) => {
     const { result, geofences, adjustmentRequest } = req.body ?? {};
     if (!result || !Array.isArray(result.nodes) || !Array.isArray(result.baselinePath) || !Array.isArray(result.optimizedPath)) {
       return res.status(400).json({ error: 'A prior optimization result payload is required.' });
+    }
+    if (result.planningInputs?.stopsText) {
+      const validation = validateStopsText(result.planningInputs.stopsText);
+      if (validation.errors.length > 0) {
+        return res.status(400).json({ error: validation.errors.join(' '), validation });
+      }
     }
     const previousProposal = snapshotProposal(result as OptimizationResult);
     const nextGeofences = Array.isArray(geofences) ? geofences : result.geofences ?? [];

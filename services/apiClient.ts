@@ -16,6 +16,7 @@ type ReroutePayload = {
   geofences?: Geofence[];
   manualRouteOrder?: string[];
   adjustmentRequest?: AdjustmentRequest;
+  previewOnly?: boolean;
 };
 
 async function postJson<T>(path: string, payload: unknown): Promise<T> {
