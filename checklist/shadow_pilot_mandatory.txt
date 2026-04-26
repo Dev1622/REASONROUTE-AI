@@ -1,0 +1,99 @@
+ReasonRoute AI - Mandatory Items Needed For Shadow Pilot Only
+
+Goal:
+Run real organization data through ReasonRoute in a non-live shadow pilot, measure the efficiency of the product against the organization's current planning, and share the results back safely without changing their live operations.
+
+Core principle:
+The product must stay focused on explainable AI routing. The shadow pilot should prove that ReasonRoute can recommend better routes and clearly explain why those routes were chosen.
+
+1. Real Data Intake
+
+- Reliable import of the organization's real stop or order data.
+- Support for CSV / XLSX / JSON intake with predictable field mapping.
+- Validation for:
+  missing lat/lng, invalid coordinates, duplicate stops, bad depot row, malformed input.
+- Simple support for real fleet count and basic route setup.
+
+2. Baseline Comparison
+
+- A usable representation of the organization's current route or current planning outcome.
+- Real baseline vs ReasonRoute comparison on:
+  distance, ETA/time, emissions, and route count.
+- The baseline should come from real operations data whenever possible, not only synthetic assumptions.
+
+3. Explainable Route Output
+
+- Strong plain-language "Why This Route" output for each recommendation.
+- Explanation should be business-facing, not raw debug logs.
+- Explanation should clearly reference things like:
+  traffic avoided, backtracking reduced, cleaner stop ordering, blocked corridor avoidance, and delivery window alignment.
+
+4. Road-Level Routing Credibility
+
+- Stable road-snapped routing.
+- Traffic-aware routing working when traffic claims are part of the shadow pilot story.
+- Diagnostics visible for provider, cache, fallback legs, and geofence impact.
+- Avoid making strong ETA claims if fallback routing is active.
+
+5. Dispatcher Review Loop
+
+- Dispatcher can review the proposed route before accepting the result.
+- Dispatcher can request an adjustment and see the route update.
+- Updated explanation should reflect the adjustment request.
+- This does not need to be a full live production workflow, but it should feel credible in the pilot.
+
+6. Geoblock / Exception Handling
+
+- Blocked road or corridor marking must work reliably.
+- Reroute must visibly update on the map.
+- Explanation should mention the blocked corridor and the reason for the change.
+
+7. Exportable Pilot Evidence
+
+- Export route decision summary.
+- Export route geometry / GeoJSON.
+- Export vehicle manifests if needed for review.
+- Keep pilot artifacts easy to collect and share after each run.
+
+8. Pilot Metrics And Reporting
+
+- Per-run summary of baseline vs proposed result.
+- Multi-run pilot reporting that can be shared back to the organization.
+- At minimum track:
+  distance change, ETA/time change, emissions change, run count, fallback rate.
+
+9. Reliability And Safety For Shadow Pilot Use
+
+- Stable enough to run repeatedly on real organization datasets.
+- Good import error handling.
+- Good optimization and reroute error handling.
+- No silent failures.
+- Preserve outputs for later review.
+
+10. Pilot Runbook / Setup
+
+- Clear checklist for required configuration:
+  Gemini, Mapbox, routing provider, traffic mode.
+- Clear repeatable process for running each shadow pilot scenario.
+- Consistent method for collecting screenshots, exports, and comparison results.
+
+Not mandatory yet for shadow pilot:
+
+- Driver app
+- Live GPS tracking
+- Real-time trigger-based rerouting
+- Full telematics integration
+- Full auth and multi-user access control
+- Production-grade persistence layer
+- Full TMS integration
+
+True minimum mandatory set:
+
+- Real data import
+- Real baseline comparison
+- Strong explainable route output
+- Reliable road routing with diagnostics
+- Geoblock reroute
+- Dispatcher review and adjustment loop
+- Exportable evidence
+- Pilot summary reporting

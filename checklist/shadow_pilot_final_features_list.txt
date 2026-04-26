@@ -1,0 +1,132 @@
+SHADOW PILOT FINAL FEATURES LIST
+
+ReasonRoute AI shadow pilot goal:
+Run real organization data through ReasonRoute in a non-live shadow pilot, measure the efficiency of the product against the organization's current planning, and share the results back safely without changing their live operations.
+
+Core principle:
+The product must stay focused on explainable AI routing. The shadow pilot should prove that ReasonRoute can recommend better routes, clearly explain why those routes were chosen, show tradeoffs before overrides, and produce shareable evidence.
+
+This combined list includes:
+- everything required from shadow_pilot_mandatory.txt
+- the shadow-pilot build-now add-ons from feature_timing_notes.txt
+- only the items that strengthen the current phase-1 product story
+
+========================================
+CURRENT IMPLEMENTING SHADOW PILOT FINAL FEATURES
+========================================
+
+1. REAL DATA INTAKE
+- Reliable import of the organization's real stop or order data.
+- Support for CSV / XLSX / JSON intake with predictable field mapping.
+- Validation for missing lat/lng, invalid coordinates, duplicate stops, bad depot row, and malformed input.
+- Simple support for real fleet count, vehicle labels, and basic route setup.
+
+2. BASELINE COMPARISON
+- A usable representation of the organization's current route or current planning outcome.
+- Real baseline vs ReasonRoute comparison on distance, ETA/time, emissions, and route count or route usage.
+- The baseline should come from real operations data whenever possible, not only synthetic assumptions.
+- Comparison should be credible at the road-snapped route level, not just synthetic geometry.
+
+3. EXPLAINABLE ROUTE OUTPUT
+- Present every AI result as a proposed route, not an unexplained final output.
+- Show strong plain-language "Why This Route" output for each recommendation.
+- Keep the explanation business-facing, not raw debug logs.
+- Explanation should clearly reference traffic avoided, backtracking reduced, cleaner stop ordering, blocked corridor avoidance, delivery window alignment, route structure improvements, and emissions impact where relevant.
+
+4. ROAD-LEVEL ROUTING CREDIBILITY
+- Stable road-snapped routing.
+- Traffic-aware routing working when traffic claims are part of the shadow pilot story.
+- Diagnostics visible for provider, cache, fallback legs, and geofence impact.
+- Avoid making strong ETA claims if fallback routing is active.
+
+5. DISPATCHER REVIEW AND ADJUSTMENT LOOP
+- Dispatcher can review the proposed route before accepting the result.
+- Support proposed -> approved -> updated proposal route states.
+- Dispatcher can request an adjustment and see the route update.
+- Updated explanation should reflect the adjustment request.
+- This does not need to be a full live production workflow, but it should feel credible in the pilot.
+
+6. GEOBLOCK / EXCEPTION HANDLING
+- Blocked road or corridor marking must work reliably.
+- Reroute must visibly update on the map.
+- Explanation should mention the blocked corridor and the reason for the change.
+
+7. OVERRIDE COST DELTA
+- When a dispatcher requests an adjustment, show the cost delta before they confirm it.
+- Show the tradeoff in time, miles, and estimated cost-oriented terms where available.
+- Keep the message simple and business-facing.
+- Do not block the dispatcher from adjusting; make the tradeoff visible before they confirm.
+
+8. TRIBAL KNOWLEDGE TAGS
+- When the dispatcher requests an adjustment, let them click fast tags instead of typing everything manually.
+- Initial tags should include examples such as School Zone Traffic, Bridge / Trailer Constraint, Customer Dock Access, and Driver Preference.
+- Use fixed tags first, then allow an optional note if needed.
+- Preserve these tags as structured signals for future phase-2 learning.
+
+9. DRIVER-FACING ONE-LINE EXPLANATION EXPORT
+- Generate a one-line driver-facing explanation and include it in the driver manifest or route handoff.
+- Keep it short, plain-language, and easy to understand.
+- Do not expose raw AI reasoning or internal optimization language.
+- Keep this export-level for shadow pilot; no full driver app is required yet.
+
+10. EXPORTABLE PILOT EVIDENCE
+- Export route decision summary.
+- Export route geometry / GeoJSON.
+- Export vehicle manifests or route handoff artifacts if needed for review.
+- Ensure artifacts clearly reflect proposal, approval, and updated-proposal states where relevant.
+- Keep pilot artifacts easy to collect and share after each run, including screenshots and before-vs-after comparisons.
+
+11. PILOT METRICS AND REPORTING
+- Per-run summary of baseline vs proposed result.
+- Multi-run pilot reporting that can be shared back to the organization.
+- At minimum track distance change, ETA/time change, emissions change, run count, reroute count, and fallback rate.
+- Make it easy to present results back to the organization after the shadow pilot.
+
+12. PREMIUM UX AND INTERACTION QUALITY
+- The shadow pilot UI should feel premium, smooth, and inviting enough that dispatchers want to explore it rather than tolerate it.
+- Keep the main route-review workflow visually calm and friendly even as features are added.
+- Use smooth transitions, polished motion, clear hierarchy, and a premium visual system instead of stacking more dense panels.
+- Preserve an always-visible route review experience so the dispatcher never has to hunt for the latest proposal.
+- If sections are separated, use progressive disclosure or lower-panel switching for secondary information rather than hiding the active route review behind tab changes.
+- Add small premium details on the map itself, such as a truck marker moving along the selected route or other subtle route-state animations, as long as they improve clarity and do not distract from the decision workflow.
+- The goal is to make the product feel like a high-end route decision console, not a cluttered operations admin screen.
+
+13. RELIABILITY AND SAFETY FOR SHADOW PILOT USE
+- Stable enough to run repeatedly on real organization datasets.
+- Good import error handling.
+- Good optimization and reroute error handling.
+- No silent failures.
+- Preserve outputs for later review.
+- Provide enough logging and visible errors to explain abnormal runs.
+
+14. PILOT RUNBOOK / SETUP
+- Clear checklist for required configuration: Gemini, Mapbox, routing provider, and traffic mode.
+- Clear repeatable process for running each shadow pilot scenario.
+- Consistent method for collecting screenshots, exports, and comparison results.
+
+========================================
+BUILD-NOW SHADOW PILOT ADD-ON PRIORITY
+========================================
+
+These are the add-ons from feature_timing_notes.txt that belong in the current shadow pilot build:
+- Override Cost Delta
+- Tribal Knowledge Tags
+- Driver-facing one-line explanation export
+
+Recommended build order:
+1. Override Cost Delta
+2. Tribal Knowledge Tags
+3. Driver-facing one-line explanation export
+
+Reason:
+This set strengthens explainability, quantifies override tradeoffs, reduces blind overrides, helps the buyer, helps the dispatcher, and creates structured learning signals for phase 2 without needing live telemetry.
+
+========================================
+IMPORTANT PRODUCT GUARDRAILS
+========================================
+
+- The product aim remains unchanged: explainable AI routing that helps dispatchers understand and trust route decisions, reducing unnecessary overrides.
+- This is a shadow pilot only, not a live operations rollout.
+- Do not let add-on features distract from the core route decision story.
+- Premium UI and smooth interaction quality are part of the current shadow pilot plan, but they must support the route-review workflow instead of turning the product into a flashy demo shell.
+- Driver app, live GPS tracking, real-time trigger-based rerouting, full telematics integration, full auth and multi-user access control, production-grade persistence, full TMS integration, planned-vs-actual replay, blast-radius reassignment, driver empathy scoring, and customer-facing notification workflows are not required for this shadow pilot build.

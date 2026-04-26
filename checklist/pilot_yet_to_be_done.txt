@@ -1,0 +1,108 @@
+ReasonRoute AI - Yet To Be Done For A Usable End-to-End Pilot
+
+Core principle:
+The product aim must stay the same: explainable AI routing that helps dispatchers understand and trust the chosen route so they do not override it blindly.
+
+1. Dispatcher Workflow
+
+- Save and load runs instead of keeping everything only in the current browser session.
+- Persistent approval history: who approved, when, and what adjustment was requested.
+- Proper manual override or manual reorder workflow as a real feature.
+- Multi-user dispatcher workflow if more than one ops person will touch the same plan.
+- Production-grade review flow for route proposal -> approval -> adjustment -> updated proposal.
+
+2. Driver App / Driver Execution Layer
+
+- A lightweight driver-facing app or mobile web experience.
+- Driver can receive the approved route and see stop order, ETA, and notes.
+- Driver can start route, arrive at stop, complete stop, and finish route.
+- Driver can receive reroute updates after dispatcher approval.
+- Driver can see what changed in a simple way.
+- Driver can acknowledge route updates.
+- Driver can report delay, closure, failed delivery, or vehicle issue.
+- Navigation handoff to Google Maps / Waze / Apple Maps or in-app navigation support.
+- Login tied to driver / vehicle / shift.
+- Weak network or offline tolerance.
+- Battery-efficient live location sharing back to dispatcher.
+
+3. Live Tracking And Real-Time Rerouting
+
+- Live GPS / telematics ingestion.
+- Vehicle progress tracking against the approved plan.
+- ETA drift detection from real vehicle movement.
+- Trigger logic for rerouting only when real delay threatens the current fleet plan.
+- Automatic heatmap generation from live signals.
+- Real-time route update delivery to dispatcher and driver.
+- Safe mid-route reroute handoff so drivers are not confused.
+
+4. Operational Integrations
+
+- Real order ingestion from TMS / ERP / CSV pipeline instead of only manual paste/upload.
+- Driver / vehicle / depot master data import.
+- Real constraints from operations data:
+  HOS, service windows, vehicle capacity, service times, depot rules.
+- Push approved routes into the system the dispatcher already uses.
+- Driver-facing handoff format that matches actual pilot operations.
+
+5. Trust, Explainability, And Auditability
+
+- Stronger explanation quality for every recommendation, including no-improvement cases.
+- Clear explanation for every reroute event and every adjustment event.
+- Before / after explanation for proposal changes.
+- Audit trail of:
+  proposed route, approved route, adjustment request, reroute, final route.
+- Confidence / fallback messaging when routing quality is degraded.
+- Better evidence surface tied to traffic, ETA, HOS, fuel, SLA, and blocked corridors.
+
+6. Reliability And Pilot Safety
+
+- Proper database / persistence layer.
+- Authentication and role-based access control.
+- API validation and request guarding.
+- Error monitoring and observability.
+- Retry / fallback handling for Mapbox and Gemini failures.
+- Better behavior when routing falls back to OSRM or synthetic legs.
+- Recovery if frontend reloads or backend restarts mid-operation.
+- Safer operational logs and audit logs.
+
+7. Pilot Operations Readiness
+
+- Real customer onboarding flow for stops, depots, fleets, and constraints.
+- Better CSV / XLSX schema validation and import error handling.
+- Configurable saved geofences, not only ad hoc map drawing.
+- Runbook for dispatchers:
+  when to trust, when to review, when to override, when to reroute.
+- Pilot reporting across runs:
+  on-time rate, delay minutes saved, override rate, reroute rate, route acceptance rate.
+- Support process for live pilot issues.
+
+8. Product And UX Gaps
+
+- Keep the app focused on explainable routing, not generic fleet planning language.
+- Make the dispatcher review flow feel production-ready, not demo-only.
+- Exports should reflect final approved route state.
+- Better visibility of current proposal vs previous proposal.
+- Better empty, loading, and failure states for operational usage.
+- Stronger distinction between dispatcher-facing reasoning and driver-facing simplicity.
+
+9. Documentation And Alignment
+
+- Update README so it matches the real product state.
+- Keep website, product copy, and in-app language aligned around:
+  explainable routing that reduces unnecessary overrides.
+- Document the phase split clearly:
+  Phase 1 = explainable routing + multimodal input + geoblock rerouting.
+  Phase 2 = learning from dispatcher behavior + trigger-based real-time rerouting.
+
+10. Highest-Priority Must-Haves For A Real Pilot Soon
+
+- Persistence
+- Auth
+- Driver app / driver execution layer
+- Live GPS tracking
+- Real reroute trigger logic
+- Proper approval and override workflow
+- Operational integrations
+- Audit trail
+- Reliability and monitoring
+- Pilot metrics reporting

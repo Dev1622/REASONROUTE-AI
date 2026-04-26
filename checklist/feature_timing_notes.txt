@@ -1,0 +1,234 @@
+ReasonRoute AI - Feature Timing And Positioning Notes
+
+Purpose:
+Capture the add-on feature ideas discussed, explain why they matter, and specify when each should be built so the product stays focused on its real core: explainable AI routing that reduces unnecessary overrides.
+
+Core product rule:
+Do not let add-on features change the product's aim.
+The center of gravity must remain:
+- explain the chosen route
+- show tradeoffs clearly
+- help dispatchers trust the recommendation
+- reduce blind overrides
+- collect structured learning signals for phase 2
+
+========================================
+BUILD NOW FOR SHADOW PILOT
+========================================
+
+1. Override Cost Delta
+
+What it is:
+When a dispatcher requests an adjustment, show the cost delta before they confirm it.
+Example:
+"Your adjusted route saves 10 mins, but adds +14 miles and +$22 in fuel costs."
+
+Why it fits now:
+- Directly supports the current product story.
+- Helps fleet managers see the business cost of overrides.
+- Makes dispatchers pause and think like owners.
+- Can be built on top of route comparison logic without needing live telemetry.
+
+When to build:
+- Immediate shadow pilot build candidate.
+- High priority.
+
+Notes:
+- Keep the message simple and business-facing.
+- Show time, miles, and estimated cost delta.
+- Do not block the dispatcher from adjusting; just make the tradeoff visible.
+
+2. Tribal Knowledge Tags
+
+What it is:
+When the dispatcher requests an adjustment, let them click fast tags instead of typing everything manually.
+Examples:
+- School Zone Traffic
+- Trailer Weight / Bridge Issue
+- Customer Dock is Hard to Back Into
+- Driver Preference
+
+Why it fits now:
+- Very low friction.
+- Feels native to logistics workflows.
+- Creates structured data that will power phase 2 learning later.
+- Improves the current review and adjustment flow without requiring major infrastructure.
+
+When to build:
+- Immediate shadow pilot build candidate.
+- High priority.
+
+Notes:
+- This is one of the cleanest bridges from phase 1 to phase 2.
+- Use fixed tags first, then allow optional note text.
+
+3. Phone Call Killer
+
+What it is:
+Generate a one-line driver-facing explanation and include it in the driver manifest or route handoff.
+Example:
+"Route updated. Sent via 4th St. to avoid a 42-minute accident delay on Highway 95."
+
+Why it fits now:
+- Extends explainability down to the driver level.
+- Reduces confusion and likely reduces clarification calls.
+- Can be implemented as an export-level feature first without building a full driver app.
+
+When to build:
+- Good shadow pilot add-on.
+- Medium-high priority.
+
+Notes:
+- Keep it very short and easy to understand.
+- Do not expose raw AI reasoning or internal optimization language.
+
+========================================
+BUILD LATER - PHASE 2 / LIVE OPS
+========================================
+
+4. Blast Radius Reroute
+
+What it is:
+If a truck is delayed, highlight downstream SLA failures and propose a rescue plan.
+Example:
+"Truck 4 is delayed by 90 mins. This will cause 3 downstream SLA failures. Proposal: Move Stops B and C to Truck 7."
+
+Why it is strong:
+- Turns the dispatcher into a proactive strategist.
+- Makes the system explain not just routes, but recovery actions.
+- Extremely powerful buyer story for exception management.
+
+Why not now:
+- Requires real delay input.
+- Requires SLA logic.
+- Requires cross-vehicle reassignment logic.
+- Requires a notion of downstream operational failure.
+
+When to build:
+- Later phase build.
+- Phase 2 or after shadow pilot success.
+
+5. Driver Empathy Score
+
+What it is:
+Show a driver impact tag alongside route efficiency metrics.
+Example:
+"Driver fatigue avoided. Assigned to Smith because this keeps him under his allowed weekly hours and back to depot earlier."
+
+Why it is strong:
+- Great buyer narrative.
+- Signals that the system balances efficiency with retention and driver wellbeing.
+
+Why not now:
+- Needs real HOS / driver hours / shift history.
+- Needs actual driver assignment context.
+- Risky if presented before the data is truly modeled.
+
+When to build:
+- Later phase build.
+- After real driver state and compliance inputs exist.
+
+6. Planned vs Actual Replay
+
+What it is:
+Compare AI recommendation vs dispatcher override using actual GPS results and show who was right.
+Example:
+"You overrode the AI 12 times this week. 8 times you were right. 4 times the AI was right."
+
+Why it is strong:
+- Builds trust through evidence.
+- Turns dispatcher learning into a measurable loop.
+- Great for weekly ops review and adoption.
+
+Why not now:
+- Requires actual GPS data.
+- Requires saved override history.
+- Requires planned vs actual route replay logic.
+
+When to build:
+- Later phase build.
+- After live driver tracking exists.
+
+7. Customer-Facing Shield
+
+What it is:
+Push a sanitized explanation to the end customer when ETA changes.
+Example:
+"Your delivery ETA is now 2:15 PM. Reason: rerouted due to severe weather on I-95. Driver is taking the fastest safe alternative."
+
+Why it is strong:
+- Reduces angry customer calls.
+- Makes delays easier to accept because the customer understands why.
+- Can fit SMS / WhatsApp / tracking-link workflows.
+
+Why not now:
+- Needs a notification pipeline.
+- Needs customer-facing ETA state.
+- Needs external messaging integration.
+
+When to build:
+- Later phase build.
+- Could begin as a pilot extension after dispatcher-side shadow pilot is proven.
+
+========================================
+BEST FEATURE PRIORITY ORDER
+========================================
+
+Best fit overall by current product leverage:
+1. Override Cost Delta
+2. Tribal Knowledge Tags
+3. Phone Call Killer
+4. Customer-Facing Shield
+5. Planned vs Actual Replay
+6. Blast Radius Reroute
+7. Driver Empathy Score
+
+Recommended next build order:
+- Override Cost Delta
+- Tribal Knowledge Tags
+- Driver-facing one-line explanation export
+
+Reason:
+This combination improves the current shadow-pilot story, helps the buyer, helps the dispatcher, and creates structured data for phase 2 without needing live driver telemetry.
+
+========================================
+FACT CHECK / CLAIM TIGHTENING
+========================================
+
+Use with confidence:
+- Explanations can increase trust in algorithmic recommendations.
+- Plain-language rationale is part of the core product value.
+- HOS constraints are real and useful, but must be modeled carefully.
+
+Use carefully / soften wording:
+- "Replacing a driver costs $8,000 to $12,000"
+  Better: replacing a driver can cost thousands to low five figures depending on recruiting, training, downtime, and lost productivity.
+
+- "Dispatchers spend 30% of their day on the phone"
+  Better: dispatchers lose significant time to driver clarification calls and exception handling.
+
+- "This saves two hours a day"
+  Better: this can reduce clarification calls and exception-handling time.
+
+HOS caution:
+- Do not present a single universal rule like "60 hours" as if it applies in every case.
+- For U.S. property-carrying drivers, FMCSA rules depend on the 60/70 hour and 7/8 day operating context.
+
+========================================
+POSITIONING RULES
+========================================
+
+Good add-on features:
+- strengthen explainability
+- quantify tradeoffs
+- reduce blind overrides
+- create structured signals for future learning
+
+Bad add-on features:
+- distract from the core route decision story
+- depend on live operational data that the product does not yet have
+- force big infrastructure work before shadow pilot proof exists
+
+Final guidance:
+For shadow pilot, build only the add-ons that make the dispatcher trust loop sharper.
+For later phases, build the live operational features only after real tracking, SLA state, and feedback history exist.
