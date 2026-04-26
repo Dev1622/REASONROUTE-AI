@@ -15,6 +15,7 @@ import {
   Node,
   OptimizationResult,
   PlanningInputs,
+  OverrideDelta,
   ProposalSnapshot,
   RouteDiagnostics,
   RouteSummary,
@@ -51,6 +52,70 @@ function sanitizeReasoningLine(line: string): string {
   return line.replace(/^\[\d+\]\s*/, '').trim();
 }
 
+function validateStopsText(stopsText: string) {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const lines = stopsText
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  if (lines.length < 2) {
+    errors.push('Provide at least one depot row and one delivery stop.');
+    return { errors, warnings };
+  }
+
+  const firstParts = lines[0].split(',').map(part => part.trim());
+  if (firstParts.length < 3) {
+    errors.push('The first row should include a depot label and two coordinates.');
+  }
+  if (firstParts[0] && !/(depot|warehouse|hub)/i.test(firstParts[0])) {
+    warnings.push('The first row does not look like a depot or warehouse label. Confirm the depot is listed first.');
+  }
+
+  const seenLabels = new Set<string>();
+  let geoRows = 0;
+
+  for (const [index, line] of lines.entries()) {
+    const parts = line.split(',').map(part => part.trim());
+    const label = parts[0];
+    if (!label) {
+      errors.push(`Row ${index + 1} is missing a stop label.`);
+      continue;
+    }
+
+    const normalizedLabel = label.toLowerCase();
+    if (seenLabels.has(normalizedLabel)) {
+      warnings.push(`Duplicate stop label detected: ${label}.`);
+    } else {
+      seenLabels.add(normalizedLabel);
+    }
+
+    if (parts.length >= 3) {
+      const a = Number(parts[1]);
+      const b = Number(parts[2]);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) {
+        errors.push(`Row ${index + 1} has invalid coordinates.`);
+      } else {
+        geoRows += 1;
+        const looksGeo = Math.abs(a) <= 90 && Math.abs(b) <= 180;
+        const looksDemo = Math.abs(a) <= 100 && Math.abs(b) <= 100;
+        if (!looksGeo && !looksDemo) {
+          warnings.push(`Row ${index + 1} has unusual coordinate values.`);
+        }
+      }
+    } else {
+      warnings.push(`Row ${index + 1} is missing full coordinate data.`);
+    }
+  }
+
+  if (geoRows < 2) {
+    errors.push('At least two rows need valid coordinates for pilot routing.');
+  }
+
+  return { errors, warnings };
+}
+
 function routeHeadline(result: OptimizationResult): string {
   switch (result.decisionStatus) {
     case 'approved':
@@ -63,6 +128,54 @@ function routeHeadline(result: OptimizationResult): string {
     default:
       return 'Route proposal is ready for dispatcher review';
   }
+}
+
+function buildDriverMessage(result: OptimizationResult, adjustmentRequest?: AdjustmentRequest): string {
+  const firstEvidence = deriveDecisionEvidence(result, adjustmentRequest)[0];
+  if (adjustmentRequest?.type === 'avoid_blocked_corridor') {
+    return 'Route updated. The proposal now avoids a blocked corridor marked on the live map.';
+  }
+  if (adjustmentRequest) {
+    return `Route updated after dispatcher review. ${adjustmentRequest.label} was applied to refine the proposal.`;
+  }
+  if (firstEvidence) {
+    return `Route selected. ${firstEvidence.replace(/\.$/, '')}.`;
+  }
+  return 'Route selected. ReasonRoute AI chose the clearest route under the current constraints.';
+}
+
+function buildOverrideDelta(previousProposal: ProposalSnapshot | undefined, nextMetrics: OptimizationResult['metrics']['optimized']): OverrideDelta | undefined {
+  if (!previousProposal) return undefined;
+  const prev = previousProposal.metrics.optimized;
+  const timeMin = +(nextMetrics.time - prev.time).toFixed(1);
+  const distanceKm = +(nextMetrics.distance - prev.distance).toFixed(2);
+  const emissionsKg = +(nextMetrics.emissions - prev.emissions).toFixed(3);
+  const estimatedFuelCost = +(distanceKm * 0.72).toFixed(2);
+  const improving = timeMin <= 0 && distanceKm <= 0 && emissionsKg <= 0;
+  const worsening = timeMin >= 0 && distanceKm >= 0 && emissionsKg >= 0;
+  const direction: OverrideDelta['direction'] =
+    Math.abs(timeMin) < 0.1 && Math.abs(distanceKm) < 0.05 && Math.abs(emissionsKg) < 0.01
+      ? 'flat'
+      : improving
+        ? 'better'
+        : worsening
+          ? 'worse'
+          : 'mixed';
+  const timePhrase = `${timeMin >= 0 ? '+' : ''}${timeMin.toFixed(1)} min`;
+  const distancePhrase = `${distanceKm >= 0 ? '+' : ''}${distanceKm.toFixed(2)} km`;
+  const costPhrase = `${estimatedFuelCost >= 0 ? '+' : ''}$${Math.abs(estimatedFuelCost).toFixed(2)}`;
+
+  return {
+    timeMin,
+    distanceKm,
+    emissionsKg,
+    estimatedFuelCost,
+    direction,
+    summary:
+      direction === 'flat'
+        ? 'This adjustment keeps the proposal materially unchanged.'
+        : `This adjustment changes the route by ${timePhrase}, ${distancePhrase}, and ${costPhrase} in estimated fuel cost.`,
+  };
 }
 
 function deriveDecisionEvidence(result: OptimizationResult, adjustmentRequest?: AdjustmentRequest): string[] {
@@ -97,6 +210,8 @@ function buildDecisionSummary(result: OptimizationResult, adjustmentRequest?: Ad
         ? 'Approved for dispatch.'
         : 'Review the route rationale below before approving or requesting an adjustment.',
     changeLabel: adjustmentRequest?.label,
+    overrideDelta: result.overrideDelta,
+    driverMessage: result.driverMessage,
   };
 }
 
@@ -107,6 +222,8 @@ function snapshotProposal(result: OptimizationResult): ProposalSnapshot {
     metrics: result.metrics,
     decisionSummary: result.decisionSummary,
     adjustmentRequest: result.adjustmentRequest,
+    overrideDelta: result.overrideDelta,
+    driverMessage: result.driverMessage,
   };
 }
 
@@ -116,6 +233,8 @@ function withDecisionSummary(
     decisionStatus?: OptimizationResult['decisionStatus'];
     adjustmentRequest?: AdjustmentRequest;
     previousProposal?: ProposalSnapshot;
+    overrideDelta?: OverrideDelta;
+    driverMessage?: string;
   } = {}
 ): OptimizationResult {
   const next: OptimizationResult = {
@@ -123,6 +242,8 @@ function withDecisionSummary(
     decisionStatus: options.decisionStatus ?? result.decisionStatus ?? 'proposed',
     adjustmentRequest: options.adjustmentRequest,
     previousProposal: options.previousProposal ?? result.previousProposal,
+    overrideDelta: options.overrideDelta ?? result.overrideDelta,
+    driverMessage: options.driverMessage ?? result.driverMessage,
   };
   return {
     ...next,
@@ -326,6 +447,15 @@ function buildComparison(baseline: Metrics, optimized: Metrics): FleetComparison
   };
 }
 
+function softenComparisonForFallback(comparison: FleetComparison, diagnostics: RouteDiagnostics): FleetComparison {
+  if (diagnostics.fallbackLegCount === 0) return comparison;
+  if (comparison.status === 'validated') return comparison;
+  return {
+    ...comparison,
+    detail: `${comparison.detail} ETA confidence is softened because ${diagnostics.fallbackLegCount} leg${diagnostics.fallbackLegCount === 1 ? '' : 's'} used fallback road routing.`,
+  };
+}
+
 function buildDiagnostics(result: OptimizationResult): RouteDiagnostics {
   const allRoads = [...(result.baselineRoutes ?? []), ...(result.optimizedRoutes ?? [])]
     .map(route => route.road)
@@ -443,6 +573,7 @@ async function applyRoadRouting(
     );
     const baselineMetrics = aggregateRouteMetrics(baselineRoutes);
     const optimizedMetrics = aggregateRouteMetrics(optimizedRoutes);
+    const comparison = buildComparison(baselineMetrics, optimizedMetrics);
     const next = {
       ...result,
       fleetConfig,
@@ -454,14 +585,17 @@ async function applyRoadRouting(
         optimized: optimizedMetrics,
         improvement: buildImprovement(baselineMetrics, optimizedMetrics),
       },
-      comparison: buildComparison(baselineMetrics, optimizedMetrics),
+      comparison,
     };
     const diagnostics = buildDiagnostics(next);
     diagnostics.roadRoutingTimeMs = Date.now() - roadRoutingStartedAt;
     diagnostics.totalProcessingTimeMs = (result.optimizationTimeMs ?? 0) + (diagnostics.roadRoutingTimeMs ?? 0);
     diagnostics.dispatcherReady = (diagnostics.totalProcessingTimeMs ?? 0) <= 30_000;
+    const overrideDelta = buildOverrideDelta(previousProposal, next.metrics.optimized);
+    const driverMessage = buildDriverMessage(next, adjustmentRequest);
     return withDecisionSummary({
       ...next,
+      comparison: softenComparisonForFallback(comparison, diagnostics),
       diagnostics,
       baselineRoad: baselineRoutes[0]?.road ?? null,
       optimizedRoad: optimizedRoutes[0]?.road ?? null,
@@ -470,6 +604,8 @@ async function applyRoadRouting(
       decisionStatus: adjustmentRequest ? 'updated_proposal' : result.decisionStatus ?? 'proposed',
       adjustmentRequest,
       previousProposal,
+      overrideDelta,
+      driverMessage,
     });
   }
 
@@ -496,15 +632,21 @@ async function applyRoadRouting(
   diagnostics.totalProcessingTimeMs = (result.optimizationTimeMs ?? 0) + (diagnostics.roadRoutingTimeMs ?? 0);
   diagnostics.dispatcherReady = (diagnostics.totalProcessingTimeMs ?? 0) <= 30_000;
 
+  const comparison = buildComparison(baselineMetrics, optimizedMetrics);
+  const overrideDelta = buildOverrideDelta(previousProposal, diagnosticsSeed.metrics.optimized);
+  const driverMessage = buildDriverMessage(diagnosticsSeed, adjustmentRequest);
+
   return withDecisionSummary({
     ...diagnosticsSeed,
-    comparison: buildComparison(baselineMetrics, optimizedMetrics),
+    comparison: softenComparisonForFallback(comparison, diagnostics),
     diagnostics,
     routeWarnings: diagnostics.warnings,
   }, {
     decisionStatus: adjustmentRequest ? 'updated_proposal' : result.decisionStatus ?? 'proposed',
     adjustmentRequest,
     previousProposal,
+    overrideDelta,
+    driverMessage,
   });
 }
 
@@ -556,6 +698,10 @@ app.post(['/optimize', '/api/optimize'], async (req, res) => {
     if (!stopsInput) {
       return res.status(400).json({ error: 'stopsText or stops array is required' });
     }
+    const validation = validateStopsText(stopsInput);
+    if (validation.errors.length > 0) {
+      return res.status(400).json({ error: validation.errors.join(' '), validation });
+    }
 
     const contextImages: ImagePayload[] = Array.isArray(images)
       ? images
@@ -570,7 +716,16 @@ app.post(['/optimize', '/api/optimize'], async (req, res) => {
       : [];
 
     const baseResult = await optimizeRoute(stopsInput, contextImages, preferences, optimization, fleet as FleetConfig | undefined);
-    const result = await applyRoadRouting(baseResult as unknown as OptimizationResult, Array.isArray(geofences) ? geofences : []);
+    const result = await applyRoadRouting(
+      {
+        ...(baseResult as unknown as OptimizationResult),
+        validation: {
+          errors: [],
+          warnings: [...(baseResult.validation?.warnings ?? []), ...validation.warnings],
+        },
+      },
+      Array.isArray(geofences) ? geofences : []
+    );
 
     res.json({
       ok: true,
@@ -594,6 +749,9 @@ app.post(['/reroute', '/api/reroute'], async (req, res) => {
     }
     const previousProposal = snapshotProposal(result as OptimizationResult);
     const nextGeofences = Array.isArray(geofences) ? geofences : result.geofences ?? [];
+    if (adjustmentRequest && typeof adjustmentRequest.label !== 'string') {
+      return res.status(400).json({ error: 'Adjustment requests need a label.' });
+    }
     let rerouted: OptimizationResult;
 
     if (adjustmentRequest?.type && adjustmentRequest.type !== 'avoid_blocked_corridor') {

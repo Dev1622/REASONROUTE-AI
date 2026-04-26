@@ -146,9 +146,27 @@ export type DecisionStatus = 'proposed' | 'approved' | 'adjustment_requested' | 
 
 export type AdjustmentType = 'prioritize_eta' | 're_evaluate' | 'simplify_route' | 'avoid_blocked_corridor';
 
+export type AdjustmentReasonCode =
+  | 'school_zone_traffic'
+  | 'bridge_or_trailer_constraint'
+  | 'customer_dock_access'
+  | 'driver_preference'
+  | 'dispatcher_review'
+  | 'blocked_corridor';
+
+export interface OverrideDelta {
+  timeMin: number;
+  distanceKm: number;
+  emissionsKg: number;
+  estimatedFuelCost: number;
+  direction: 'better' | 'worse' | 'mixed' | 'flat';
+  summary: string;
+}
+
 export interface AdjustmentRequest {
   type: AdjustmentType;
   label: string;
+  reasonCode?: AdjustmentReasonCode;
   note?: string;
 }
 
@@ -158,6 +176,8 @@ export interface DecisionSummary {
   evidence: string[];
   reviewPrompt?: string;
   changeLabel?: string;
+  overrideDelta?: OverrideDelta;
+  driverMessage?: string;
 }
 
 export interface PlanningInputs {
@@ -177,6 +197,18 @@ export interface ProposalSnapshot {
   };
   decisionSummary?: DecisionSummary;
   adjustmentRequest?: AdjustmentRequest;
+  overrideDelta?: OverrideDelta;
+  driverMessage?: string;
+}
+
+export interface PilotReportSnapshot {
+  runCount: number;
+  rerouteCount: number;
+  approvedCount: number;
+  fallbackRatePct: number;
+  distanceDeltaKm: number;
+  timeDeltaMin: number;
+  emissionsDeltaKg: number;
 }
 
 export interface OptimizationResult {
@@ -208,6 +240,9 @@ export interface OptimizationResult {
   adjustmentRequest?: AdjustmentRequest;
   previousProposal?: ProposalSnapshot;
   planningInputs?: PlanningInputs;
+  overrideDelta?: OverrideDelta;
+  driverMessage?: string;
+  pilotReport?: PilotReportSnapshot;
   metrics: {
     baseline: Metrics;
     optimized: Metrics;

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, Download, FileJson, Play, RefreshCcw, Sparkles, Terminal, Upload, X } from 'lucide-react';
 import clsx from 'clsx';
 import * as XLSX from 'xlsx';
-import { AdjustmentRequest, AppConfigStatus, FleetConfig, FleetRoutePlan, OptimizationResult, ProcessingStatus } from '../types';
+import { AdjustmentReasonCode, AdjustmentRequest, AppConfigStatus, FleetConfig, FleetRoutePlan, OptimizationResult, OverrideDelta, ProcessingStatus } from '../types';
 
 interface SidebarProps {
   onOptimize: (
@@ -17,7 +17,7 @@ interface SidebarProps {
   onSelectRoute: (routeId?: string) => void;
   status: ProcessingStatus;
   result: OptimizationResult | null;
-  history: { ts: string; improvement: { distancePct: number; timePct: number; emissionsPct: number }; baseline: number; optimized: number; vehicles: number }[];
+  history: { ts: string; improvement: { distancePct: number; timePct: number; emissionsPct: number }; baseline: number; optimized: number; vehicles: number; fallbackLegCount: number; rerouted: boolean; timeDelta: number; emissionsDelta: number }[];
   errorMessage?: string | null;
   configStatus: AppConfigStatus | null;
 }
@@ -79,6 +79,8 @@ function buildFleetSummary(result: OptimizationResult) {
     decisionStatus: result.decisionStatus,
     decisionSummary: result.decisionSummary,
     adjustmentRequest: result.adjustmentRequest,
+    overrideDelta: result.overrideDelta,
+    driverMessage: result.driverMessage,
     fleetConfig: result.fleetConfig,
     comparison: result.comparison,
     metrics: result.metrics,
@@ -92,7 +94,7 @@ function buildFleetSummaryHtml(result: OptimizationResult) {
   const rows = result.optimizedRoutes
     .map(route => `<tr><td>${route.vehicleLabel}</td><td>${route.summary.stopCount ?? 0}</td><td>${route.metrics.distance.toFixed(2)} km</td><td>${route.metrics.time.toFixed(1)} min</td><td>${route.metrics.emissions.toFixed(3)} kg</td></tr>`)
     .join('');
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>Route Decision Summary</title><style>body{font-family:Arial,sans-serif;margin:24px;color:#0f172a}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;text-align:left}th{background:#e2e8f0}.cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0}.card{border:1px solid #cbd5e1;border-radius:10px;padding:12px;background:#f8fafc}</style></head><body><h1>${result.decisionSummary?.title ?? result.comparison?.headline ?? 'Route Decision Summary'}</h1><p>${result.decisionSummary?.summary ?? result.comparison?.detail ?? ''}</p><div class="cards"><div class="card"><strong>Status</strong><br/>${result.decisionStatus ?? 'proposed'}</div><div class="card"><strong>Distance</strong><br/>${result.metrics.optimized.distance.toFixed(2)} km</div><div class="card"><strong>Time</strong><br/>${result.metrics.optimized.time.toFixed(1)} min</div><div class="card"><strong>Routes</strong><br/>${result.fleetConfig?.vehicleCount ?? result.optimizedRoutes.length}</div></div><table><thead><tr><th>Vehicle</th><th>Stops</th><th>Distance</th><th>Time</th><th>Emissions</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>Route Decision Summary</title><style>body{font-family:Arial,sans-serif;margin:24px;color:#0f172a}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;text-align:left}th{background:#e2e8f0}.cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0}.card{border:1px solid #cbd5e1;border-radius:10px;padding:12px;background:#f8fafc}</style></head><body><h1>${result.decisionSummary?.title ?? result.comparison?.headline ?? 'Route Decision Summary'}</h1><p>${result.decisionSummary?.summary ?? result.comparison?.detail ?? ''}</p><p><strong>Driver-facing explanation:</strong> ${result.driverMessage ?? result.decisionSummary?.driverMessage ?? 'Not generated'}</p><div class="cards"><div class="card"><strong>Status</strong><br/>${result.decisionStatus ?? 'proposed'}</div><div class="card"><strong>Distance</strong><br/>${result.metrics.optimized.distance.toFixed(2)} km</div><div class="card"><strong>Time</strong><br/>${result.metrics.optimized.time.toFixed(1)} min</div><div class="card"><strong>Routes</strong><br/>${result.fleetConfig?.vehicleCount ?? result.optimizedRoutes.length}</div></div><table><thead><tr><th>Vehicle</th><th>Stops</th><th>Distance</th><th>Time</th><th>Emissions</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
 }
 
 function buildVehicleManifest(result: OptimizationResult, route: FleetRoutePlan) {
@@ -101,6 +103,7 @@ function buildVehicleManifest(result: OptimizationResult, route: FleetRoutePlan)
     generatedAt: new Date().toISOString(),
     decisionStatus: result.decisionStatus,
     decisionSummary: result.decisionSummary,
+    driverMessage: result.driverMessage,
     vehicleLabel: route.vehicleLabel,
     routeId: route.routeId,
     metrics: route.metrics,
@@ -124,8 +127,89 @@ const ADJUSTMENT_OPTIONS: AdjustmentRequest[] = [
   { type: 'simplify_route', label: 'Simplify route', note: 'Prefer a cleaner route shape with fewer detours where possible.' },
 ];
 
+const TRIBAL_TAGS: { code: AdjustmentReasonCode; label: string; detail: string }[] = [
+  { code: 'school_zone_traffic', label: 'School Zone Traffic', detail: 'Local congestion pattern' },
+  { code: 'bridge_or_trailer_constraint', label: 'Bridge / Trailer Constraint', detail: 'Avoid clearance or trailer issues' },
+  { code: 'customer_dock_access', label: 'Customer Dock Access', detail: 'Docking or turn-in difficulty' },
+  { code: 'driver_preference', label: 'Driver Preference', detail: 'Dispatcher wants a familiar route' },
+];
+
+type EvidencePanel = 'pilot' | 'routes' | 'diagnostics' | 'exports';
+
 function sanitizeReasoningLine(line: string) {
   return line.replace(/^\[\d+\]\s*/, '').trim();
+}
+
+function validateStopsTextInput(source: string) {
+  const issues: string[] = [];
+  const lines = source
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  if (lines.length < 2) {
+    issues.push('Add at least one depot row and one delivery stop.');
+    return issues;
+  }
+
+  const labels = new Set<string>();
+  lines.forEach((line, index) => {
+    const parts = line.split(',').map(part => part.trim());
+    if (!parts[0]) {
+      issues.push(`Row ${index + 1} is missing a stop label.`);
+      return;
+    }
+    const key = parts[0].toLowerCase();
+    if (labels.has(key)) {
+      issues.push(`Duplicate stop label found: ${parts[0]}.`);
+    }
+    labels.add(key);
+
+    if (parts.length < 3) {
+      issues.push(`Row ${index + 1} should include label, lat, lng.`);
+      return;
+    }
+
+    const lat = Number(parts[1]);
+    const lng = Number(parts[2]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      issues.push(`Row ${index + 1} has invalid coordinates.`);
+    }
+  });
+
+  return Array.from(new Set(issues));
+}
+
+function buildPreviewDelta(result: OptimizationResult, adjustment: AdjustmentRequest): OverrideDelta {
+  const current = result.metrics.optimized;
+  const presets: Record<string, { time: number; distance: number; emissions: number }> = {
+    prioritize_eta: { time: -4.5, distance: 2.1, emissions: 0.18 },
+    re_evaluate: { time: -2.2, distance: 0.9, emissions: 0.06 },
+    simplify_route: { time: 1.5, distance: -1.6, emissions: -0.09 },
+    avoid_blocked_corridor: { time: 4.8, distance: 2.8, emissions: 0.21 },
+  };
+  const preset = presets[adjustment.type] ?? { time: 0, distance: 0, emissions: 0 };
+  const estimatedFuelCost = +(preset.distance * 0.72).toFixed(2);
+  const direction: OverrideDelta['direction'] =
+    preset.time === 0 && preset.distance === 0 && preset.emissions === 0
+      ? 'flat'
+      : preset.time <= 0 && preset.distance <= 0 && preset.emissions <= 0
+        ? 'better'
+        : preset.time >= 0 && preset.distance >= 0 && preset.emissions >= 0
+          ? 'worse'
+          : 'mixed';
+
+  return {
+    timeMin: +preset.time.toFixed(1),
+    distanceKm: +preset.distance.toFixed(2),
+    emissionsKg: +preset.emissions.toFixed(3),
+    estimatedFuelCost,
+    direction,
+    summary:
+      direction === 'flat'
+        ? 'This adjustment is expected to keep the proposal materially unchanged.'
+        : `Preview: ${adjustment.label} shifts ETA to ${+(current.time + preset.time).toFixed(1)} min and distance to ${+(current.distance + preset.distance).toFixed(1)} km before confirmation.`,
+  };
 }
 
 const RouteCard: React.FC<{ route: FleetRoutePlan; selected: boolean; tone: 'baseline' | 'optimized'; onClick: () => void }> = ({ route, selected, tone, onClick }) => {
@@ -169,7 +253,11 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
   const [showDebugLogs, setShowDebugLogs] = useState(false);
   const [healthCollapsed, setHealthCollapsed] = useState(false);
   const [selectedAdjustment, setSelectedAdjustment] = useState<AdjustmentRequest>(ADJUSTMENT_OPTIONS[0]);
+  const [selectedTag, setSelectedTag] = useState<AdjustmentReasonCode>('school_zone_traffic');
   const [adjustmentNote, setAdjustmentNote] = useState('');
+  const [pendingAdjustment, setPendingAdjustment] = useState<AdjustmentRequest | null>(null);
+  const [importIssues, setImportIssues] = useState<string[]>([]);
+  const [evidencePanel, setEvidencePanel] = useState<EvidencePanel>('pilot');
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -188,6 +276,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
       const matched = ADJUSTMENT_OPTIONS.find(option => option.type === result.adjustmentRequest?.type);
       if (matched) setSelectedAdjustment(matched);
       setAdjustmentNote(result.adjustmentRequest.note ?? '');
+      if (result.adjustmentRequest.reasonCode) setSelectedTag(result.adjustmentRequest.reasonCode);
     }
   }, [result?.adjustmentRequest]);
 
@@ -213,11 +302,17 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
       try {
         const parsed = JSON.parse(reader.result as string);
         const toLine = (node: any) => `${node.label ?? node.name ?? node.id ?? 'Stop'}, ${node.lat ?? node.x ?? ''}, ${node.lng ?? node.y ?? ''}`;
-        if (Array.isArray(parsed)) setStops(parsed.map(item => (typeof item === 'string' ? item : toLine(item))).join('\n'));
-        else if (parsed && Array.isArray(parsed.nodes)) setStops(parsed.nodes.map(toLine).join('\n'));
-        else setStops(JSON.stringify(parsed, null, 2));
+        const nextStops = Array.isArray(parsed)
+          ? parsed.map(item => (typeof item === 'string' ? item : toLine(item))).join('\n')
+          : parsed && Array.isArray(parsed.nodes)
+            ? parsed.nodes.map(toLine).join('\n')
+            : JSON.stringify(parsed, null, 2);
+        setStops(nextStops);
+        setImportIssues(validateStopsTextInput(nextStops));
       } catch {
-        setStops(reader.result as string);
+        const raw = reader.result as string;
+        setStops(raw);
+        setImportIssues(validateStopsTextInput(raw));
       }
     };
     reader.readAsText(file);
@@ -245,10 +340,12 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
       const workbook = XLSX.read(source, { type: typeof source === 'string' ? 'string' : 'array' });
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false }) as unknown[][];
-      setStops(rowsToStops(rows));
+      const nextStops = rowsToStops(rows);
+      setStops(nextStops);
+      setImportIssues(validateStopsTextInput(nextStops));
     } catch (error: any) {
       console.error(error);
-      alert(error?.message ?? 'Spreadsheet import failed.');
+      setImportIssues([error?.message ?? 'Spreadsheet import failed.']);
     } finally {
       e.target.value = '';
     }
@@ -258,6 +355,30 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
   const exportFleetHtml = () => result && downloadText('Route_Decision.html', buildFleetSummaryHtml(result), 'text/html');
   const exportVehicleManifests = () => result && result.optimizedRoutes.forEach(route => downloadText(`${route.vehicleLabel.replace(/\s+/g, '_')}_Manifest.json`, JSON.stringify(buildVehicleManifest(result, route), null, 2), 'application/json'));
   const exportGeojson = () => result && downloadText('Route_Geometry.geojson', JSON.stringify({ type: 'FeatureCollection', features: [...result.baselineRoutes.map(route => routeFeature(result, route, 'baseline')), ...result.optimizedRoutes.map(route => routeFeature(result, route, 'optimized'))] }, null, 2), 'application/json');
+  const previewDelta = result && pendingAdjustment ? buildPreviewDelta(result, pendingAdjustment) : null;
+  const pilotReport = result?.pilotReport;
+
+  const handleOptimizeClick = () => {
+    const issues = validateStopsTextInput(stops);
+    setImportIssues(issues);
+    if (issues.length > 0) return;
+    onOptimize(stops, images, weights, { ...optimization, baselineMode }, { vehicleCount, vehicleLabels: parsedVehicleLabels });
+  };
+
+  const queueAdjustmentReview = () => {
+    if (!result) return;
+    setPendingAdjustment({
+      ...selectedAdjustment,
+      reasonCode: selectedTag,
+      note: adjustmentNote.trim() || selectedAdjustment.note,
+    });
+  };
+
+  const confirmAdjustment = () => {
+    if (!pendingAdjustment) return;
+    onRequestAdjustment(pendingAdjustment);
+    setPendingAdjustment(null);
+  };
 
   return (
     <div className="flex h-full flex-col border-r border-slate-800 bg-slate-900 text-slate-300">
@@ -307,7 +428,16 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
               </label>
             </div>
           </div>
-          <textarea className="h-36 w-full resize-none rounded-md border border-slate-800 bg-slate-950 p-3 font-mono text-sm text-slate-300 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/50" value={stops} onChange={e => setStops(e.target.value)} disabled={isProcessing} />
+          <textarea
+            className="h-36 w-full resize-none rounded-md border border-slate-800 bg-slate-950 p-3 font-mono text-sm text-slate-300 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/50"
+            value={stops}
+            onChange={e => {
+              const nextStops = e.target.value;
+              setStops(nextStops);
+              setImportIssues(validateStopsTextInput(nextStops));
+            }}
+            disabled={isProcessing}
+          />
           <p className="mt-2 text-[11px] text-slate-500">First row should be the depot. ReasonRoute will propose a route plan and explain why it won.</p>
         </div>
 
@@ -324,6 +454,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
           <input type="text" value={vehicleNames} onChange={e => setVehicleNames(e.target.value)} disabled={isProcessing} className="w-full rounded border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-emerald-500" placeholder="Vehicle 1, Vehicle 2, Vehicle 3" />
         </div>
 
+        {importIssues.length > 0 && <div className="space-y-1 rounded-md border border-red-500/40 bg-red-950/20 px-3 py-2 text-xs text-red-300">{importIssues.map((issue, index) => <div key={`${issue}-${index}`}>{issue}</div>)}</div>}
         {errorMessage && <div className="rounded-md border border-red-500/40 bg-red-950/20 px-3 py-2 text-xs text-red-300">{errorMessage}</div>}
         {result?.validation?.warnings?.length ? <div className="space-y-1 rounded-md border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">{result.validation.warnings.map((warning, index) => <div key={index}>{warning}</div>)}</div> : null}
 
@@ -386,7 +517,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
             </div>
           )}
         </div>
-        <button onClick={() => onOptimize(stops, images, weights, { ...optimization, baselineMode }, { vehicleCount, vehicleLabels: parsedVehicleLabels })} disabled={isProcessing || !stops.trim()} className={clsx('flex w-full items-center justify-center rounded-md px-4 py-3 font-bold transition-all', isProcessing ? 'cursor-not-allowed bg-slate-800 text-slate-500' : 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/20 hover:bg-emerald-500')}>
+        <button onClick={handleOptimizeClick} disabled={isProcessing || !stops.trim()} className={clsx('flex w-full items-center justify-center rounded-md px-4 py-3 font-bold transition-all', isProcessing ? 'cursor-not-allowed bg-slate-800 text-slate-500' : 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/20 hover:bg-emerald-500')}>
           {isProcessing ? <span className="flex items-center">Preparing proposal...</span> : <><Play className="mr-2 h-4 w-4" />PROPOSE ROUTE</>}
         </button>
         {result?.comparison && <div className={clsx('rounded-md border px-3 py-3 text-xs', result.comparison.status === 'improved' ? 'border-emerald-500/30 bg-emerald-950/20 text-emerald-200' : result.comparison.status === 'worsened' ? 'border-red-500/30 bg-red-950/20 text-red-200' : result.comparison.status === 'validated' ? 'border-blue-500/30 bg-blue-950/20 text-blue-200' : 'border-amber-500/30 bg-amber-950/20 text-amber-200')}><div className="font-bold uppercase tracking-wider">{result.comparison.headline}</div><div className="mt-1 text-[11px]">{result.comparison.detail}</div></div>}
@@ -400,6 +531,23 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
               </div>
               <div className={clsx('rounded-full border px-2 py-1 font-mono text-[10px] uppercase tracking-wider', result.decisionStatus === 'approved' ? 'border-emerald-500/40 bg-emerald-950/20 text-emerald-300' : result.decisionStatus === 'updated_proposal' ? 'border-violet-500/40 bg-violet-950/20 text-violet-300' : 'border-slate-700 bg-slate-950/60 text-slate-300')}>
                 {result.decisionStatus ?? 'proposed'}
+              </div>
+            </div>
+            <div className="space-y-2 rounded border border-slate-800 bg-slate-950/50 p-3">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Dispatcher intent</div>
+              <div className="grid grid-cols-2 gap-2">
+                {TRIBAL_TAGS.map(tag => (
+                  <button
+                    key={tag.code}
+                    type="button"
+                    disabled={isProcessing}
+                    className={clsx('rounded border px-2 py-2 text-left text-[11px] transition-colors', selectedTag === tag.code ? 'border-emerald-500/40 bg-emerald-950/20 text-emerald-200' : 'border-slate-800 bg-slate-950/60 text-slate-400 hover:border-slate-700')}
+                    onClick={() => setSelectedTag(tag.code)}
+                  >
+                    <div className="font-semibold">{tag.label}</div>
+                    <div className="mt-1 text-[10px] text-slate-500">{tag.detail}</div>
+                  </button>
+                ))}
               </div>
             </div>
             <div className="grid grid-cols-3 gap-2">
@@ -420,8 +568,31 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
               onChange={event => setAdjustmentNote(event.target.value)}
               disabled={isProcessing}
               className="h-20 w-full resize-none rounded border border-slate-800 bg-slate-950/80 px-3 py-2 text-xs text-slate-300 outline-none focus:border-violet-500"
-              placeholder="Optional dispatcher note. Example: keep this proposal but tighten ETA confidence."
+              placeholder="Optional dispatcher note. Example: avoid the school pickup window near this customer."
             />
+            {pendingAdjustment && previewDelta ? (
+              <div className="space-y-2 rounded border border-amber-500/30 bg-amber-950/15 p-3 text-xs text-amber-100">
+                <div className="flex items-center justify-between">
+                  <div className="font-bold uppercase tracking-wider text-amber-300">Override Cost Delta</div>
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-amber-200">{previewDelta.direction}</span>
+                </div>
+                <div>{previewDelta.summary}</div>
+                <div className="grid grid-cols-2 gap-2 font-mono text-[11px]">
+                  <div>Time: {previewDelta.timeMin >= 0 ? '+' : ''}{previewDelta.timeMin.toFixed(1)} min</div>
+                  <div>Distance: {previewDelta.distanceKm >= 0 ? '+' : ''}{previewDelta.distanceKm.toFixed(2)} km</div>
+                  <div>Emissions: {previewDelta.emissionsKg >= 0 ? '+' : ''}{previewDelta.emissionsKg.toFixed(3)} kg</div>
+                  <div>Fuel cost: {previewDelta.estimatedFuelCost >= 0 ? '+' : ''}${Math.abs(previewDelta.estimatedFuelCost).toFixed(2)}</div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button type="button" disabled={isProcessing} className="rounded border border-violet-500/40 bg-violet-950/20 px-3 py-2 text-sm font-semibold text-violet-200 transition-colors hover:bg-violet-950/35" onClick={confirmAdjustment}>
+                    Confirm Adjustment
+                  </button>
+                  <button type="button" disabled={isProcessing} className="rounded border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm font-semibold text-slate-300 transition-colors hover:bg-slate-800" onClick={() => setPendingAdjustment(null)}>
+                    Keep Current Proposal
+                  </button>
+                </div>
+              </div>
+            ) : null}
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
@@ -435,7 +606,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
                 type="button"
                 disabled={isProcessing}
                 className="flex items-center justify-center rounded border border-violet-500/40 bg-violet-950/20 px-3 py-2 text-sm font-semibold text-violet-200 transition-colors hover:bg-violet-950/35"
-                onClick={() => onRequestAdjustment({ ...selectedAdjustment, note: adjustmentNote.trim() || selectedAdjustment.note })}
+                onClick={queueAdjustmentReview}
               >
                 <RefreshCcw className="mr-2 h-4 w-4" />Request Adjustment
               </button>
@@ -444,6 +615,18 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
             {result.previousProposal ? (
               <div className="rounded border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px] text-slate-400">
                 Previous proposal: {result.previousProposal.metrics.optimized.distance.toFixed(1)} km, {result.previousProposal.metrics.optimized.time.toFixed(1)} min.
+              </div>
+            ) : null}
+            {result.overrideDelta ? (
+              <div className="rounded border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px] text-slate-300">
+                <div className="mb-1 font-bold uppercase tracking-wider text-slate-500">Applied override delta</div>
+                <div>{result.overrideDelta.summary}</div>
+              </div>
+            ) : null}
+            {result.driverMessage ? (
+              <div className="rounded border border-blue-500/20 bg-blue-950/10 px-3 py-2 text-[11px] text-blue-100">
+                <div className="mb-1 font-bold uppercase tracking-wider text-blue-300">Driver handoff</div>
+                <div>{result.driverMessage}</div>
               </div>
             ) : null}
           </div>
@@ -466,24 +649,88 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onRequestAdjus
                 ))}
           </div>
         </div>
-        {result?.diagnostics && <div className="space-y-1 rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px]"><div className="text-xs font-bold uppercase tracking-wider text-slate-500">Decision Diagnostics</div><div className="flex justify-between"><span className="text-slate-500">Provider</span><span>{result.diagnostics.provider ?? 'unknown'}</span></div><div className="flex justify-between"><span className="text-slate-500">Traffic mode</span><span>{result.diagnostics.trafficMode ?? 'freeflow'}</span></div><div className="flex justify-between"><span className="text-slate-500">Routing</span><span>{result.diagnostics.routingStatus}</span></div><div className="flex justify-between"><span className="text-slate-500">Cache</span><span>{result.diagnostics.cacheStatus}</span></div><div className="flex justify-between"><span className="text-slate-500">Fallback legs</span><span>{result.diagnostics.fallbackLegCount}</span></div><div className="flex justify-between"><span className="text-slate-500">Geofence impact</span><span>{result.diagnostics.geofenceImpact}</span></div><div className="flex justify-between"><span className="text-slate-500">Optimize time</span><span>{result.diagnostics.optimizationTimeMs ?? 0} ms</span></div><div className="flex justify-between"><span className="text-slate-500">Road routing</span><span>{result.diagnostics.roadRoutingTimeMs ?? 0} ms</span></div><div className="flex justify-between"><span className="text-slate-500">Total processing</span><span>{result.diagnostics.totalProcessingTimeMs ?? 0} ms</span></div><div className="flex justify-between"><span className="text-slate-500">Dispatcher SLA</span><span>{result.diagnostics.dispatcherReady ? 'under 30s' : 'over 30s'}</span></div></div>}
-        {result && <>
-          <div><div className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Proposed Route Set</div><div className="space-y-2">{result.optimizedRoutes.map(route => <RouteCard key={`optimized-${route.routeId}`} route={route} tone="optimized" selected={result.routeFocus?.selectedRouteId === route.routeId} onClick={() => onSelectRoute(route.routeId)} />)}</div></div>
-          <div><div className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Baseline Comparison</div><div className="space-y-2">{result.baselineRoutes.map(route => <RouteCard key={`baseline-${route.routeId}`} route={route} tone="baseline" selected={result.routeFocus?.selectedRouteId === route.routeId} onClick={() => onSelectRoute(route.routeId)} />)}</div></div>
-        </>}
-        <div>
-          <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Recent Runs</label>
-          <div className="max-h-36 space-y-2 overflow-y-auto rounded-md border border-slate-800 bg-slate-950 p-3">
-            {history.length === 0 && <div className="text-xs italic text-slate-600">No runs yet.</div>}
-            {history.map((run, index) => <div key={`${run.ts}-${index}`} className="flex items-center justify-between rounded border border-slate-800 bg-slate-900/60 px-2 py-1 text-[11px]"><div className="flex flex-col"><span className="font-mono text-slate-300">{new Date(run.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><span className="text-slate-500">{run.vehicles} vehicles | {run.baseline.toFixed(1)} to {run.optimized.toFixed(1)} km</span></div><div className="font-mono text-emerald-400">{run.improvement.distancePct > 0 ? `-${run.improvement.distancePct}%` : `${run.improvement.distancePct}%`}</div></div>)}
+        <div className="space-y-3 rounded-md border border-slate-800 bg-slate-950/35 p-3">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Lower Panel</label>
+            <span className="font-mono text-[10px] text-slate-500">pilot evidence / support</span>
           </div>
+          <div className="grid grid-cols-4 gap-2">
+            {([
+              ['pilot', 'Pilot Evidence'],
+              ['routes', 'Routes'],
+              ['diagnostics', 'Diagnostics'],
+              ['exports', 'Exports'],
+            ] as const).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className={clsx('rounded border px-2 py-2 text-[10px] font-semibold uppercase tracking-wider transition-colors', evidencePanel === key ? 'border-violet-500/40 bg-violet-950/20 text-violet-200' : 'border-slate-800 bg-slate-950/60 text-slate-400 hover:border-slate-700')}
+                onClick={() => setEvidencePanel(key)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {evidencePanel === 'pilot' ? (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded border border-slate-800 bg-slate-950/70 p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500">Run count</div>
+                  <div className="mt-1 font-mono text-xl text-slate-100">{pilotReport?.runCount ?? history.length}</div>
+                </div>
+                <div className="rounded border border-slate-800 bg-slate-950/70 p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500">Fallback rate</div>
+                  <div className="mt-1 font-mono text-xl text-slate-100">{(pilotReport?.fallbackRatePct ?? 0).toFixed(1)}%</div>
+                </div>
+                <div className="rounded border border-slate-800 bg-slate-950/70 p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500">Distance saved</div>
+                  <div className="mt-1 font-mono text-xl text-emerald-300">{(pilotReport?.distanceDeltaKm ?? 0).toFixed(1)} km</div>
+                </div>
+                <div className="rounded border border-slate-800 bg-slate-950/70 p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500">Time saved</div>
+                  <div className="mt-1 font-mono text-xl text-emerald-300">{(pilotReport?.timeDeltaMin ?? 0).toFixed(1)} min</div>
+                </div>
+              </div>
+              <div className="rounded border border-slate-800 bg-slate-950/70 p-3 text-[11px] text-slate-400">
+                <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">Session evidence</div>
+                <div>Reroutes: {pilotReport?.rerouteCount ?? 0} | Approved proposals: {pilotReport?.approvedCount ?? 0} | Emissions delta: {(pilotReport?.emissionsDeltaKg ?? 0).toFixed(3)} kg CO2</div>
+              </div>
+              <div>
+                <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Recent Runs</label>
+                <div className="max-h-36 space-y-2 overflow-y-auto rounded-md border border-slate-800 bg-slate-950 p-3">
+                  {history.length === 0 && <div className="text-xs italic text-slate-600">No runs yet.</div>}
+                  {history.map((run, index) => <div key={`${run.ts}-${index}`} className="flex items-center justify-between rounded border border-slate-800 bg-slate-900/60 px-2 py-1 text-[11px]"><div className="flex flex-col"><span className="font-mono text-slate-300">{new Date(run.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><span className="text-slate-500">{run.vehicles} vehicles | {run.baseline.toFixed(1)} to {run.optimized.toFixed(1)} km</span></div><div className="font-mono text-emerald-400">{run.improvement.distancePct > 0 ? `-${run.improvement.distancePct}%` : `${run.improvement.distancePct}%`}</div></div>)}
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {evidencePanel === 'routes' && result ? (
+            <div className="space-y-3">
+              <div><div className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Proposed Route Set</div><div className="space-y-2">{result.optimizedRoutes.map(route => <RouteCard key={`optimized-${route.routeId}`} route={route} tone="optimized" selected={result.routeFocus?.selectedRouteId === route.routeId} onClick={() => onSelectRoute(route.routeId)} />)}</div></div>
+              <div><div className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Baseline Comparison</div><div className="space-y-2">{result.baselineRoutes.map(route => <RouteCard key={`baseline-${route.routeId}`} route={route} tone="baseline" selected={result.routeFocus?.selectedRouteId === route.routeId} onClick={() => onSelectRoute(route.routeId)} />)}</div></div>
+            </div>
+          ) : null}
+
+          {evidencePanel === 'diagnostics' && result?.diagnostics ? (
+            <div className="space-y-1 rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px]"><div className="text-xs font-bold uppercase tracking-wider text-slate-500">Decision Diagnostics</div><div className="flex justify-between"><span className="text-slate-500">Provider</span><span>{result.diagnostics.provider ?? 'unknown'}</span></div><div className="flex justify-between"><span className="text-slate-500">Traffic mode</span><span>{result.diagnostics.trafficMode ?? 'freeflow'}</span></div><div className="flex justify-between"><span className="text-slate-500">Routing</span><span>{result.diagnostics.routingStatus}</span></div><div className="flex justify-between"><span className="text-slate-500">Cache</span><span>{result.diagnostics.cacheStatus}</span></div><div className="flex justify-between"><span className="text-slate-500">Fallback legs</span><span>{result.diagnostics.fallbackLegCount}</span></div><div className="flex justify-between"><span className="text-slate-500">Geofence impact</span><span>{result.diagnostics.geofenceImpact}</span></div><div className="flex justify-between"><span className="text-slate-500">Optimize time</span><span>{result.diagnostics.optimizationTimeMs ?? 0} ms</span></div><div className="flex justify-between"><span className="text-slate-500">Road routing</span><span>{result.diagnostics.roadRoutingTimeMs ?? 0} ms</span></div><div className="flex justify-between"><span className="text-slate-500">Total processing</span><span>{result.diagnostics.totalProcessingTimeMs ?? 0} ms</span></div><div className="flex justify-between"><span className="text-slate-500">Dispatcher SLA</span><span>{result.diagnostics.dispatcherReady ? 'under 30s' : 'over 30s'}</span></div></div>
+          ) : null}
+
+          {evidencePanel === 'exports' ? (
+            <div className="space-y-2">
+              <button onClick={exportFleetHtml} disabled={!result} className="flex w-full items-center justify-center rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"><Download className="mr-2 h-4 w-4" />Export Route_Decision.html</button>
+              <button onClick={exportFleetJson} disabled={!result} className="flex w-full items-center justify-center rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"><Download className="mr-2 h-4 w-4" />Export Route_Decision.json</button>
+              <button onClick={exportVehicleManifests} disabled={!result} className="flex w-full items-center justify-center rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"><Download className="mr-2 h-4 w-4" />Export Vehicle Manifests</button>
+              <button onClick={exportGeojson} disabled={!result} className="flex w-full items-center justify-center rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"><Download className="mr-2 h-4 w-4" />Export Route_Geometry.geojson</button>
+            </div>
+          ) : null}
         </div>
       </div>
-      <div className="space-y-2 border-t border-slate-800 bg-slate-900/50 p-4">
-        <button onClick={exportFleetHtml} disabled={!result} className="flex w-full items-center justify-center rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"><Download className="mr-2 h-4 w-4" />Export Route_Decision.html</button>
-        <button onClick={exportFleetJson} disabled={!result} className="flex w-full items-center justify-center rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"><Download className="mr-2 h-4 w-4" />Export Route_Decision.json</button>
-        <button onClick={exportVehicleManifests} disabled={!result} className="flex w-full items-center justify-center rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"><Download className="mr-2 h-4 w-4" />Export Vehicle Manifests</button>
-        <button onClick={exportGeojson} disabled={!result} className="flex w-full items-center justify-center rounded border border-slate-700 px-3 py-2 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"><Download className="mr-2 h-4 w-4" />Export Route_Geometry.geojson</button>
+      <div className="border-t border-slate-800 bg-slate-900/50 p-4">
+        <div className="rounded border border-slate-800 bg-slate-950/50 px-3 py-2 text-[11px] text-slate-500">
+          Route review stays visible above. Pilot evidence, diagnostics, route sets, and exports are grouped into the lower panel to keep the workflow calm.
+        </div>
       </div>
     </div>
   );

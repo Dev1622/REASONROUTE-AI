@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import * as d3 from 'd3';
-import { Circle, CircleMarker, MapContainer, Pane, Polygon, Polyline, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet';
+import { Circle, CircleMarker, MapContainer, Marker, Pane, Polygon, Polyline, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet';
+import { divIcon } from 'leaflet';
 import type { LatLngBoundsExpression, LatLngExpression } from 'leaflet';
 import { DisplayFilters, FleetRoutePlan, Geofence, LatLngPoint, OptimizationResult, RouteFocus, RouteTrafficSegment, TrafficCongestionLevel } from '../types';
 
@@ -171,6 +172,29 @@ function buildBlockedRoadPolygon(path: [number, number][], widthMeters = 18): La
   return [...leftOffsets, ...rightOffsets.reverse()];
 }
 
+function pointAlongPath(path: [number, number][], targetRatio = 0.58): [number, number] | null {
+  if (path.length === 0) return null;
+  if (path.length === 1) return path[0];
+  const lengths = [];
+  let total = 0;
+  for (let i = 0; i < path.length - 1; i += 1) {
+    const length = Math.sqrt(distanceSq(path[i], path[i + 1]));
+    lengths.push(length);
+    total += length;
+  }
+  const target = total * targetRatio;
+  let seen = 0;
+  for (let i = 0; i < lengths.length; i += 1) {
+    const nextSeen = seen + lengths[i];
+    if (target <= nextSeen) {
+      const localT = lengths[i] <= Number.EPSILON ? 0 : (target - seen) / lengths[i];
+      return lerpPoint(path[i], path[i + 1], localT);
+    }
+    seen = nextSeen;
+  }
+  return path[path.length - 1];
+}
+
 function FitMapToData({ bounds, enabled }: { bounds: LatLngBoundsExpression | null; enabled: boolean }) {
   const map = useMap();
   useEffect(() => {
@@ -237,6 +261,7 @@ function GeoMap({ data, onGeofencesChange, filters, focus, onFiltersChange, onFo
     if (!route) return [];
     return route.road?.coordinates?.length ? route.road.coordinates : idsToGeoPath(route.path, nodeMap);
   }, [nodeMap, selectedBaselineRoute, selectedOptimizedRoute]);
+  const activeTruckPoint = useMemo(() => pointAlongPath(selectedPoints), [selectedPoints]);
   const bounds = useMemo(() => computeBounds(allPoints), [allPoints]);
   const selectedBounds = useMemo(() => computeBounds(selectedPoints), [selectedPoints]);
   const mapCenter = geoNodes.length > 0 ? ([geoNodes[0].lat, geoNodes[0].lng] as LatLngExpression) : ([20, 0] as LatLngExpression);
@@ -271,6 +296,16 @@ function GeoMap({ data, onGeofencesChange, filters, focus, onFiltersChange, onFo
     return sliceRoadBetween(activeRoad, draftSnaps[0]!, draftSnaps[1]!);
   }, [activeRoad, draftSnaps]);
   const trafficAvailable = [...data.baselineRoutes, ...data.optimizedRoutes].some(route => route.road?.source === 'mapbox' && (route.road.trafficSegments?.length ?? 0) > 0);
+  const truckIcon = useMemo(
+    () =>
+      divIcon({
+        className: 'reasonroute-truck-marker',
+        html: '<div style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:9999px;background:rgba(15,23,42,0.92);border:1px solid rgba(16,185,129,0.55);box-shadow:0 10px 25px rgba(16,185,129,0.25);font-size:15px;">🚚</div>',
+        iconSize: [28, 28],
+        iconAnchor: [14, 14],
+      }),
+    []
+  );
 
   const finishDraft = () => {
     if (activeRoad.length < 2 || draftSnaps.length < 2 || draftPath.length < 2) return;
@@ -301,6 +336,7 @@ function GeoMap({ data, onGeofencesChange, filters, focus, onFiltersChange, onFo
     const trafficLines = filters.showTraffic && route.road?.source === 'mapbox' ? buildTrafficDisplayLines(route.road.trafficSegments ?? []).filter(line => matchesTrafficFilter(line.congestion, trafficFilter)) : [];
     return (
       <React.Fragment key={`${collection}-${route.routeId}`}>
+        {selected && collection === 'optimized' ? <Polyline positions={path} pathOptions={{ color: '#ecfeff', weight: weight + 4, opacity: 0.14 }} /> : null}
         <Polyline positions={path} pathOptions={{ color: baseColor, weight, opacity, dashArray: collection === 'baseline' ? '10 10' : undefined }} />
         {trafficLines.map((line, index) => (
           <React.Fragment key={`${collection}-${route.routeId}-${line.congestion}-${index}`}>
@@ -365,6 +401,13 @@ function GeoMap({ data, onGeofencesChange, filters, focus, onFiltersChange, onFo
             );
           })}
         </Pane>
+        {activeTruckPoint ? (
+          <Pane name="vehicle-marker" style={{ zIndex: 710 }}>
+            <Marker position={activeTruckPoint} icon={truckIcon}>
+              <Tooltip direction="top" offset={[0, -10]}>{selectedOptimizedRoute?.vehicleLabel ?? 'Active route'}</Tooltip>
+            </Marker>
+          </Pane>
+        ) : null}
       </MapContainer>
       <Panel title="Route Layers" collapsed={controlsCollapsed} onToggleCollapsed={() => setControlsCollapsed(prev => !prev)} className="left-4 top-4 w-64">
         <div className="mt-3 grid grid-cols-2 gap-2">

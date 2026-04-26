@@ -3,7 +3,7 @@ import Sidebar from './components/Sidebar';
 import MapVisualization from './components/MapVisualization';
 import MetricsDashboard from './components/MetricsDashboard';
 import { fetchConfigStatus, optimizeViaApi, rerouteViaApi } from './services/apiClient';
-import { AdjustmentRequest, AppConfigStatus, DisplayFilters, FleetConfig, Geofence, OptimizationResult, ProcessingStatus, RouteFocus } from './types';
+import { AdjustmentRequest, AppConfigStatus, DisplayFilters, FleetConfig, Geofence, OptimizationResult, PilotReportSnapshot, ProcessingStatus, RouteFocus } from './types';
 
 const App: React.FC = () => {
   const [status, setStatus] = useState<ProcessingStatus>(ProcessingStatus.IDLE);
@@ -20,10 +20,12 @@ const App: React.FC = () => {
     fitToActiveRoute: true,
   });
   const [history, setHistory] = useState<
-    { ts: string; improvement: OptimizationResult['metrics']['improvement']; baseline: number; optimized: number; vehicles: number }[]
+    { ts: string; improvement: OptimizationResult['metrics']['improvement']; baseline: number; optimized: number; vehicles: number; fallbackLegCount: number; rerouted: boolean; timeDelta: number; emissionsDelta: number }[]
   >([]);
   const [configStatus, setConfigStatus] = useState<AppConfigStatus | null>(null);
   const [metricsCollapsed, setMetricsCollapsed] = useState(false);
+  const [approvalCount, setApprovalCount] = useState(0);
+  const [rerouteCount, setRerouteCount] = useState(0);
 
   useEffect(() => {
     fetchConfigStatus().then(setConfigStatus).catch(() => setConfigStatus(null));
@@ -49,27 +51,54 @@ const App: React.FC = () => {
       )
     );
 
-  const applyResult = (nextResult: OptimizationResult) => {
+  const buildPilotReport = (
+    nextResult: OptimizationResult,
+    nextHistory: { ts: string; improvement: OptimizationResult['metrics']['improvement']; baseline: number; optimized: number; vehicles: number; fallbackLegCount: number; rerouted: boolean; timeDelta: number; emissionsDelta: number }[],
+    nextRerouteCount: number,
+    nextApprovalCount: number
+  ): PilotReportSnapshot => {
+    const runCount = nextHistory.length;
+    const fallbackRuns = nextHistory.filter(entry => entry.fallbackLegCount > 0).length;
+    return {
+      runCount,
+      rerouteCount: nextRerouteCount,
+      approvedCount: nextApprovalCount,
+      fallbackRatePct: runCount > 0 ? +((fallbackRuns / runCount) * 100).toFixed(1) : 0,
+      distanceDeltaKm: +nextHistory.reduce((sum, entry) => sum + (entry.baseline - entry.optimized), 0).toFixed(2),
+      timeDeltaMin: +nextHistory.reduce((sum, entry) => sum + entry.timeDelta, 0).toFixed(1),
+      emissionsDeltaKg: +nextHistory.reduce((sum, entry) => sum + entry.emissionsDelta, 0).toFixed(3),
+    };
+  };
+
+  const applyResult = (nextResult: OptimizationResult, overrides?: { rerouteCount?: number; approvalCount?: number }) => {
     const selectedRouteId = routeFocus.selectedRouteId ?? nextResult.optimizedRoutes?.[0]?.routeId;
-    setResult({
-      ...nextResult,
-      displayFilters,
-      routeFocus: {
-        ...routeFocus,
-        selectedRouteId,
-      },
+    setHistory(prev => {
+      const nextHistory = [
+        {
+          ts: new Date().toISOString(),
+          improvement: nextResult.metrics.improvement,
+          baseline: nextResult.metrics.baseline.distance,
+          optimized: nextResult.metrics.optimized.distance,
+          vehicles: nextResult.fleetConfig?.vehicleCount ?? nextResult.optimizedRoutes.length,
+          fallbackLegCount: nextResult.diagnostics?.fallbackLegCount ?? 0,
+          rerouted: nextResult.decisionStatus === 'updated_proposal',
+          timeDelta: +(nextResult.metrics.baseline.time - nextResult.metrics.optimized.time).toFixed(1),
+          emissionsDelta: +(nextResult.metrics.baseline.emissions - nextResult.metrics.optimized.emissions).toFixed(3),
+        },
+        ...prev,
+      ].slice(0, 12);
+      setResult({
+        ...nextResult,
+        pilotReport: buildPilotReport(nextResult, nextHistory, overrides?.rerouteCount ?? rerouteCount, overrides?.approvalCount ?? approvalCount),
+        displayFilters,
+        routeFocus: {
+          ...routeFocus,
+          selectedRouteId,
+        },
+      });
+      setStatus(ProcessingStatus.COMPLETE);
+      return nextHistory;
     });
-    setStatus(ProcessingStatus.COMPLETE);
-    setHistory(prev => [
-      {
-        ts: new Date().toISOString(),
-        improvement: nextResult.metrics.improvement,
-        baseline: nextResult.metrics.baseline.distance,
-        optimized: nextResult.metrics.optimized.distance,
-        vehicles: nextResult.fleetConfig?.vehicleCount ?? nextResult.optimizedRoutes.length,
-      },
-      ...prev,
-    ].slice(0, 6));
   };
 
   const buildBlockedRoadAdjustment = (currentGeofences: Geofence[] | undefined, nextGeofences: Geofence[]): AdjustmentRequest | undefined => {
@@ -113,11 +142,18 @@ const App: React.FC = () => {
   };
 
   const handleApprove = () => {
+    setApprovalCount(prev => prev + 1);
     setResult(prev =>
       prev
         ? {
             ...prev,
             decisionStatus: 'approved',
+            pilotReport: prev.pilotReport
+              ? {
+                  ...prev.pilotReport,
+                  approvedCount: prev.pilotReport.approvedCount + 1,
+                }
+              : prev.pilotReport,
             decisionSummary: prev.decisionSummary
               ? {
                   ...prev.decisionSummary,
@@ -138,12 +174,16 @@ const App: React.FC = () => {
     try {
       const nextGeofences = overrides.geofences ?? result.geofences;
       const adjustmentRequest = overrides.adjustmentRequest ?? buildBlockedRoadAdjustment(result.geofences, nextGeofences ?? []);
+      const nextRerouteCount = adjustmentRequest ? rerouteCount + 1 : rerouteCount;
+      if (adjustmentRequest) {
+        setRerouteCount(nextRerouteCount);
+      }
       const nextResult = await rerouteViaApi({
         result,
         geofences: nextGeofences,
         adjustmentRequest,
       });
-      applyResult(nextResult);
+      applyResult(nextResult, { rerouteCount: nextRerouteCount });
     } catch (error: any) {
       console.error(error);
       setErrorMessage(error?.message ?? 'Road reroute failed.');
