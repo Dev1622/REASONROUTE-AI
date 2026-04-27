@@ -1,0 +1,40 @@
+IMPLEMENTATION START ORDER
+
+Goal:
+- Start implementing immediately without drifting back into generic feature expansion.
+
+PHASE 1 - LOCK THE PRODUCT CORE
+1. Make route review the center of the UI.
+2. Keep Request Adjustment as primary UI real estate.
+3. Ensure Why This Route is plain-language and always visible.
+4. Make Override Cost Delta part of the default adjustment flow.
+5. Save structured adjustment reasons and notes.
+
+PHASE 2 - MAKE THE NEGOTIATION LAYER CREDIBLE
+1. Preserve original proposal vs adjusted proposal.
+2. Improve reroute explanation quality.
+3. Make geoblocks part of human correction capture.
+4. Improve exports so they show decision state and reasoning.
+
+PHASE 3 - MAKE THE SHADOW PILOT MEASURABLE
+1. Strengthen real-data intake.
+2. Add pilot evidence rollups.
+3. Show count of approvals, adjustments, and reroutes.
+4. Surface aggregate cost or efficiency deltas.
+
+PHASE 4 - ADD ONLY REASONING-SUPPORTIVE OPERATIONAL CONSTRAINTS
+1. Service time
+2. Time windows
+3. Dispatcher notes passthrough
+4. Geocoding
+
+Rule for Phase 4:
+- Do not add a new constraint just because logistics software usually has it.
+- Add it only if it helps the system explain a better decision or a credible infeasibility.
+
+DO NOT PRIORITIZE YET
+- Full enterprise constraint parity
+- Full automation
+- Heavy infrastructure for retraining
+- Large driver/customer apps
+- Broad feature checklist expansion without direct support for the thesis

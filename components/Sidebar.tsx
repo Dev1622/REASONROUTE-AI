@@ -81,6 +81,7 @@ function buildFleetSummary(result: OptimizationResult) {
     decisionStatus: result.decisionStatus,
     decisionSummary: result.decisionSummary,
     adjustmentRequest: result.adjustmentRequest,
+    previousProposal: result.previousProposal,
     overrideDelta: result.overrideDelta,
     driverMessage: result.driverMessage,
     pilotReport: result.pilotReport,
@@ -97,7 +98,7 @@ function buildFleetSummaryHtml(result: OptimizationResult) {
   const rows = result.optimizedRoutes
     .map(route => `<tr><td>${route.vehicleLabel}</td><td>${route.summary.stopCount ?? 0}</td><td>${route.metrics.distance.toFixed(2)} km</td><td>${route.metrics.time.toFixed(1)} min</td><td>${route.metrics.emissions.toFixed(3)} kg</td></tr>`)
     .join('');
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>Route Decision Summary</title><style>body{font-family:Arial,sans-serif;margin:24px;color:#0f172a}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;text-align:left}th{background:#e2e8f0}.cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0}.card{border:1px solid #cbd5e1;border-radius:10px;padding:12px;background:#f8fafc}</style></head><body><h1>${result.decisionSummary?.title ?? result.comparison?.headline ?? 'Route Decision Summary'}</h1><p>${result.decisionSummary?.summary ?? result.comparison?.detail ?? ''}</p><p><strong>Driver-facing explanation:</strong> ${result.driverMessage ?? result.decisionSummary?.driverMessage ?? 'Not generated'}</p><div class="cards"><div class="card"><strong>Status</strong><br/>${result.decisionStatus ?? 'proposed'}</div><div class="card"><strong>Distance</strong><br/>${result.metrics.optimized.distance.toFixed(2)} km</div><div class="card"><strong>Time</strong><br/>${result.metrics.optimized.time.toFixed(1)} min</div><div class="card"><strong>Routes</strong><br/>${result.fleetConfig?.vehicleCount ?? result.optimizedRoutes.length}</div></div><table><thead><tr><th>Vehicle</th><th>Stops</th><th>Distance</th><th>Time</th><th>Emissions</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><title>Route Decision Summary</title><style>body{font-family:Arial,sans-serif;margin:24px;color:#0f172a}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #cbd5e1;padding:8px;text-align:left}th{background:#e2e8f0}.cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0}.card{border:1px solid #cbd5e1;border-radius:10px;padding:12px;background:#f8fafc}.note{margin-top:12px;padding:12px;border:1px solid #cbd5e1;border-radius:10px;background:#f8fafc}</style></head><body><h1>${result.decisionSummary?.title ?? result.comparison?.headline ?? 'Route Decision Summary'}</h1><p>${result.decisionSummary?.summary ?? result.comparison?.detail ?? ''}</p><p><strong>Driver-facing explanation:</strong> ${result.driverMessage ?? result.decisionSummary?.driverMessage ?? 'Not generated'}</p><div class="cards"><div class="card"><strong>Status</strong><br/>${decisionStateLabel(result.decisionStatus)}</div><div class="card"><strong>Distance</strong><br/>${result.metrics.optimized.distance.toFixed(2)} km</div><div class="card"><strong>Time</strong><br/>${result.metrics.optimized.time.toFixed(1)} min</div><div class="card"><strong>Vehicles</strong><br/>${result.fleetConfig?.vehicleCount ?? result.optimizedRoutes.length}</div></div><div class="note"><strong>Negotiation context</strong><br/>Adjustment reason: ${result.adjustmentRequest?.label ?? 'No adjustment requested'}${result.adjustmentRequest?.note ? `<br/>Dispatcher note: ${result.adjustmentRequest.note}` : ''}${result.overrideDelta ? `<br/>Override delta: ${result.overrideDelta.summary}` : ''}</div><table><thead><tr><th>Vehicle</th><th>Stops</th><th>Distance</th><th>Time</th><th>Emissions</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
 }
 
 function buildVehicleManifest(result: OptimizationResult, route: FleetRoutePlan) {
@@ -106,6 +107,9 @@ function buildVehicleManifest(result: OptimizationResult, route: FleetRoutePlan)
     generatedAt: new Date().toISOString(),
     decisionStatus: result.decisionStatus,
     decisionSummary: result.decisionSummary,
+    adjustmentRequest: result.adjustmentRequest,
+    previousProposal: result.previousProposal,
+    overrideDelta: result.overrideDelta,
     driverMessage: result.driverMessage,
     vehicleLabel: route.vehicleLabel,
     routeId: route.routeId,
@@ -141,6 +145,20 @@ type EvidencePanel = 'pilot' | 'routes' | 'diagnostics' | 'exports';
 
 function sanitizeReasoningLine(line: string) {
   return line.replace(/^\[\d+\]\s*/, '').trim();
+}
+
+function decisionStateLabel(status?: OptimizationResult['decisionStatus']) {
+  switch (status) {
+    case 'approved':
+      return 'Approved';
+    case 'updated_proposal':
+      return 'Updated proposal';
+    case 'adjustment_requested':
+      return 'Adjustment pending';
+    case 'proposed':
+    default:
+      return 'Proposed';
+  }
 }
 
 function validateStopsTextInput(source: string) {
@@ -228,6 +246,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjus
   const [vehicleNames, setVehicleNames] = useState('Vehicle 1, Vehicle 2, Vehicle 3');
   const [showDebugLogs, setShowDebugLogs] = useState(false);
   const [healthCollapsed, setHealthCollapsed] = useState(false);
+  const [setupCollapsed, setSetupCollapsed] = useState(false);
   const [selectedAdjustment, setSelectedAdjustment] = useState<AdjustmentRequest>(ADJUSTMENT_OPTIONS[0]);
   const [selectedTag, setSelectedTag] = useState<AdjustmentReasonCode>('school_zone_traffic');
   const [adjustmentNote, setAdjustmentNote] = useState('');
@@ -255,8 +274,15 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjus
     }
   }, [result?.adjustmentRequest]);
 
+  useEffect(() => {
+    if (result) {
+      setSetupCollapsed(true);
+    }
+  }, [result]);
+
   const isProcessing = ![ProcessingStatus.IDLE, ProcessingStatus.COMPLETE, ProcessingStatus.ERROR].includes(status);
   const parsedVehicleLabels = useMemo(() => vehicleNames.split(',').map(label => label.trim()).filter(Boolean).slice(0, vehicleCount), [vehicleNames, vehicleCount]);
+  const selectedTagMeta = useMemo(() => TRIBAL_TAGS.find(tag => tag.code === selectedTag), [selectedTag]);
   const reasoningEvidence = useMemo(
     () => (result?.decisionSummary?.evidence?.length ? result.decisionSummary.evidence : (result?.logs ?? []).map(sanitizeReasoningLine).filter(Boolean).slice(0, 4)),
     [result]
@@ -352,7 +378,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjus
     <div className="flex h-full flex-col border-r border-slate-800 bg-slate-900 text-slate-300">
       <div className="border-b border-slate-800 p-6">
         <h1 className="bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-2xl font-bold text-transparent">ReasonRoute AI</h1>
-        <p className="mt-1 font-mono text-xs text-slate-500">EXPLAINABLE ROUTE INTELLIGENCE</p>
+        <p className="mt-1 font-mono text-xs text-slate-500">GLASS BOX NEGOTIATION LAYER</p>
       </div>
       <div className="flex-1 space-y-6 overflow-y-auto p-6">
         <div className={`rounded-md border px-3 py-3 text-xs ${configStatus?.ready ? 'border-emerald-500/30 bg-emerald-950/15 text-emerald-200' : 'border-amber-500/30 bg-amber-950/20 text-amber-200'}`}>
@@ -375,6 +401,22 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjus
           )}
         </div>
 
+        <div className="rounded-md border border-slate-800 bg-slate-950/35 p-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-xs font-bold uppercase tracking-wider text-slate-500">Route Setup</div>
+              <div className="mt-1 text-[11px] text-slate-500">Real fleet input, optimization controls, and proposal generation stay here when you need to reopen them.</div>
+            </div>
+            <button type="button" className="rounded border border-slate-700 px-2 py-1 text-[10px] hover:bg-slate-800" onClick={() => setSetupCollapsed(prev => !prev)}>
+              {setupCollapsed ? 'Open' : 'Min'}
+            </button>
+          </div>
+          {setupCollapsed ? (
+            <div className="mt-3 rounded border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px] text-slate-500">
+              Route review stays primary while this setup workspace is minimized.
+            </div>
+          ) : (
+            <div className="mt-4 space-y-6">
         <div>
           <div className="mb-2 flex items-center justify-between">
             <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Delivery Stops</label>
@@ -497,6 +539,9 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjus
         <button onClick={handleOptimizeClick} disabled={isProcessing || !stops.trim()} className={clsx('flex w-full items-center justify-center rounded-md px-4 py-3 font-bold transition-all', isProcessing ? 'cursor-not-allowed bg-slate-800 text-slate-500' : 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/20 hover:bg-emerald-500')}>
           {isProcessing ? <span className="flex items-center">Preparing proposal...</span> : <><Play className="mr-2 h-4 w-4" />PROPOSE ROUTE</>}
         </button>
+            </div>
+          )}
+        </div>
         {result?.comparison && <div className={clsx('rounded-md border px-3 py-3 text-xs', result.comparison.status === 'improved' ? 'border-emerald-500/30 bg-emerald-950/20 text-emerald-200' : result.comparison.status === 'worsened' ? 'border-red-500/30 bg-red-950/20 text-red-200' : result.comparison.status === 'validated' ? 'border-blue-500/30 bg-blue-950/20 text-blue-200' : 'border-amber-500/30 bg-amber-950/20 text-amber-200')}><div className="font-bold uppercase tracking-wider">{result.comparison.headline}</div><div className="mt-1 text-[11px]">{result.comparison.detail}</div></div>}
         {result ? (
           <div className="space-y-3 rounded-md border border-violet-500/20 bg-violet-950/10 p-3">
@@ -507,11 +552,11 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjus
                 <div className="mt-1 text-xs text-slate-400">{result.decisionSummary?.summary ?? 'Review the recommendation before approving or requesting a change.'}</div>
               </div>
               <div className={clsx('rounded-full border px-2 py-1 font-mono text-[10px] uppercase tracking-wider', result.decisionStatus === 'approved' ? 'border-emerald-500/40 bg-emerald-950/20 text-emerald-300' : result.decisionStatus === 'updated_proposal' ? 'border-violet-500/40 bg-violet-950/20 text-violet-300' : 'border-slate-700 bg-slate-950/60 text-slate-300')}>
-                {result.decisionStatus ?? 'proposed'}
+                {decisionStateLabel(result.decisionStatus)}
               </div>
             </div>
             <div className="space-y-2 rounded border border-slate-800 bg-slate-950/50 p-3">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Dispatcher intent</div>
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Dispatcher knowledge</div>
               <div className="grid grid-cols-2 gap-2">
                 {TRIBAL_TAGS.map(tag => (
                   <button
@@ -585,10 +630,13 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjus
                 className="flex items-center justify-center rounded border border-violet-500/40 bg-violet-950/20 px-3 py-2 text-sm font-semibold text-violet-200 transition-colors hover:bg-violet-950/35"
                 onClick={queueAdjustmentReview}
               >
-                <RefreshCcw className="mr-2 h-4 w-4" />Preview Adjustment
+                <RefreshCcw className="mr-2 h-4 w-4" />Request Adjustment
               </button>
             </div>
-            <div className="text-[11px] text-slate-500">{result.decisionSummary?.reviewPrompt ?? 'Review the route rationale below before dispatch.'}</div>
+            <div className="space-y-1 text-[11px] text-slate-500">
+              <div>{result.decisionSummary?.reviewPrompt ?? 'Review the route rationale below before dispatch.'}</div>
+              {selectedTagMeta ? <div className="text-slate-400">Captured tribal signal: <span className="font-semibold text-slate-300">{selectedTagMeta.label}</span> - {selectedTagMeta.detail}.</div> : null}
+            </div>
             {result.previousProposal ? (
               <div className="rounded border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px] text-slate-400">
                 Previous proposal: {result.previousProposal.metrics.optimized.distance.toFixed(1)} km, {result.previousProposal.metrics.optimized.time.toFixed(1)} min.
@@ -602,7 +650,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjus
             ) : null}
             {result.driverMessage ? (
               <div className="rounded border border-blue-500/20 bg-blue-950/10 px-3 py-2 text-[11px] text-blue-100">
-                <div className="mb-1 font-bold uppercase tracking-wider text-blue-300">Driver handoff</div>
+                <div className="mb-1 font-bold uppercase tracking-wider text-blue-300">Driver-facing explanation</div>
                 <div>{result.driverMessage}</div>
               </div>
             ) : null}
@@ -628,8 +676,8 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjus
         </div>
         <div className="space-y-3 rounded-md border border-slate-800 bg-slate-950/35 p-3">
           <div className="flex items-center justify-between">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Lower Panel</label>
-            <span className="font-mono text-[10px] text-slate-500">pilot evidence / support</span>
+            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Pilot Evidence</label>
+            <span className="font-mono text-[10px] text-slate-500">proof / routes / diagnostics / exports</span>
           </div>
           <div className="grid grid-cols-4 gap-2">
             {([
@@ -706,7 +754,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjus
       </div>
       <div className="border-t border-slate-800 bg-slate-900/50 p-4">
         <div className="rounded border border-slate-800 bg-slate-950/50 px-3 py-2 text-[11px] text-slate-500">
-          Route review stays visible above. Pilot evidence, diagnostics, route sets, and exports are grouped into the lower panel to keep the workflow calm.
+          Route review stays visible above. Pilot evidence, diagnostics, route sets, and exports stay grouped below so the dispatcher can negotiate the proposal without losing context.
         </div>
       </div>
     </div>
@@ -714,3 +762,5 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjus
 };
 
 export default Sidebar;
+
+

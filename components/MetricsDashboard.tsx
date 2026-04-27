@@ -49,19 +49,19 @@ const MetricsDashboard: React.FC<MetricsDashboardProps> = ({ baseline, optimized
         </div>
       )}
       <div className="grid w-full grid-cols-2 gap-3 xl:grid-cols-4">
-        <MetricCard label="Chosen Distance" base={baseline.distance} opt={optimized.distance} unit="km" icon={<TrendingDown className="h-4 w-4 text-blue-400" />} colorClass="text-blue-400" percentOverride={improvement?.distancePct} />
-        <MetricCard label="Chosen ETA" base={baseline.time} opt={optimized.time} unit="min" icon={<Clock className="h-4 w-4 text-amber-400" />} colorClass="text-amber-400" percentOverride={improvement?.timePct} />
-        <MetricCard label="Emissions" base={baseline.emissions} opt={optimized.emissions} unit="kg CO2" icon={<Leaf className="h-4 w-4 text-emerald-400" />} colorClass="text-emerald-400" percentOverride={improvement?.emissionsPct} />
+        <MetricCard label="Proposed Distance" base={baseline.distance} opt={optimized.distance} unit="km" icon={<TrendingDown className="h-4 w-4 text-blue-400" />} colorClass="text-blue-400" percentOverride={improvement?.distancePct} />
+        <MetricCard label="Proposed ETA" base={baseline.time} opt={optimized.time} unit="min" icon={<Clock className="h-4 w-4 text-amber-400" />} colorClass="text-amber-400" percentOverride={improvement?.timePct} />
+        <MetricCard label="Proposed Emissions" base={baseline.emissions} opt={optimized.emissions} unit="kg CO2" icon={<Leaf className="h-4 w-4 text-emerald-400" />} colorClass="text-emerald-400" percentOverride={improvement?.emissionsPct} />
         <div className="rounded-xl border border-slate-700/80 bg-slate-900/70 p-3 backdrop-blur-sm">
           <div className="mb-2 flex items-center gap-2">
             <div className="rounded bg-slate-700/50 p-1.5 text-fuchsia-400"><Route className="h-4 w-4" /></div>
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Routes Proposed</span>
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Vehicles In Proposal</span>
           </div>
           <div className="flex items-baseline gap-2">
             <span className="font-mono text-2xl font-bold text-slate-100">{routeCount}</span>
             <span className="font-mono text-xs text-slate-500">vehicles</span>
           </div>
-          <div className="mt-2 text-xs text-slate-500">These totals show why the proposed route set beat or validated against the baseline.</div>
+          <div className="mt-2 text-xs text-slate-500">These totals support the proposal story and give the dispatcher context before negotiating a change.</div>
         </div>
       </div>
     </div>

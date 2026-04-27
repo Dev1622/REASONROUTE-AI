@@ -1,0 +1,35 @@
+SHADOW PILOT GOAL REFRAMED
+
+Old shadow-pilot framing:
+- Prove we can generate better optimized routes from real organizational data.
+
+New shadow-pilot framing:
+- Prove that ReasonRoute can expose the Trust-Profit Gap in real dispatcher workflows.
+- Show how much cost or margin leakage is introduced when dispatchers are forced to manually override black-box plans without explanation or cost visibility.
+
+What the shadow pilot must demonstrate:
+1. Real route plans are reviewed by dispatchers before dispatch.
+2. Legacy workflow is binary:
+   accept or manually override.
+3. Manual overrides usually happen through assignment and sequencing changes.
+4. Legacy tools accept forced changes and recalculate ETAs, but do not explain tradeoffs.
+5. ReasonRoute provides the missing middle layer:
+   explanation, negotiation, cost delta, and structured reason capture.
+
+What success looks like:
+- We can ingest real organizational data.
+- We can show the proposed route and explain why it was chosen.
+- We can let the dispatcher request an adjustment instead of blindly dragging stops.
+- We can show the operational or financial cost delta of that adjustment.
+- We can log why the dispatcher changed it.
+- We can quantify cost-blind manual behavior versus explained alternative behavior.
+
+What the shadow pilot should not become:
+- A giant enterprise-routing rebuild.
+- A feature race against FarEye, Locus, or full TMS suites.
+- A pure optimization benchmark with no human workflow story.
+
+The real output of the pilot:
+- Proof that the explanation is the product.
+- Proof that the cost delta changes dispatcher behavior.
+- Proof that tribal knowledge can be captured as structured input rather than lost in drag-and-drop overrides.

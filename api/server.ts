@@ -119,14 +119,14 @@ function validateStopsText(stopsText: string) {
 function routeHeadline(result: OptimizationResult): string {
   switch (result.decisionStatus) {
     case 'approved':
-      return 'Dispatcher approved the proposed route';
+      return 'Proposal approved for dispatch';
     case 'updated_proposal':
-      return 'Updated route proposal is ready for review';
+      return 'Updated proposal is ready for review';
     case 'adjustment_requested':
-      return 'Adjustment request is being applied';
+      return 'Adjustment request is being evaluated';
     case 'proposed':
     default:
-      return 'Route proposal is ready for dispatcher review';
+      return 'Route proposal is ready for review';
   }
 }
 
@@ -159,8 +159,8 @@ function buildOverrideDelta(previousProposal: ProposalSnapshot | undefined, next
     direction,
     summary:
       direction === 'flat'
-        ? 'This adjustment keeps the proposal materially unchanged.'
-        : `This adjustment changes the route by ${timePhrase}, ${distancePhrase}, and ${costPhrase} in estimated fuel cost.`,
+        ? 'This adjustment leaves the proposal materially unchanged, so the dispatcher is choosing continuity over a route change.'
+        : `Confirming this adjustment changes the plan by ${timePhrase}, ${distancePhrase}, and ${costPhrase} in estimated fuel impact.`,
   };
 }
 
@@ -169,10 +169,10 @@ function deriveDecisionEvidence(result: OptimizationResult, adjustmentRequest?: 
   const notes: string[] = [];
 
   if (adjustmentRequest) {
-    notes.push(`Updated after dispatcher request: ${adjustmentRequest.label}.`);
+    notes.push(`Dispatcher negotiation request: ${adjustmentRequest.label}.`);
   }
   if (result.geofences?.length) {
-    notes.push(`The proposal avoids ${result.geofences.length} blocked corridor${result.geofences.length === 1 ? '' : 's'} drawn on the live map.`);
+    notes.push(`The proposal avoids ${result.geofences.length} blocked corridor${result.geofences.length === 1 ? '' : 's'} captured on the live map.`);
   }
   if (result.routeWarnings?.length) {
     notes.push(result.routeWarnings[0]);
@@ -196,15 +196,17 @@ function buildDecisionSummary(result: OptimizationResult, adjustmentRequest?: Ad
     title: routeHeadline(result),
     summary:
       comparison?.headline === 'Route validated'
-        ? `ReasonRoute AI re-checked the plan and found no materially better alternative under the current constraints.`
+        ? `ReasonRoute re-checked the dispatch plan and found no materially better alternative under the current constraints.`
         : fallbackSensitive
-          ? `${result.optimizedRoutes.length} route${result.optimizedRoutes.length === 1 ? '' : 's'} selected with fallback-aware road evidence. Distance and emissions remain directional; ETA should be reviewed with routing warnings.`
-          : `${result.optimizedRoutes.length} route${result.optimizedRoutes.length === 1 ? '' : 's'} selected with ${metrics.time.toFixed(1)} min ETA, ${metrics.distance.toFixed(1)} km, and ${metrics.emissions.toFixed(2)} kg CO2.`,
+          ? `${result.optimizedRoutes.length} route${result.optimizedRoutes.length === 1 ? '' : 's'} selected with fallback-aware road evidence. Distance and emissions remain directional, and ETA should be reviewed alongside routing warnings before dispatch.`
+          : `${result.optimizedRoutes.length} route${result.optimizedRoutes.length === 1 ? '' : 's'} selected as the current best dispatch proposal at ${metrics.time.toFixed(1)} min ETA, ${metrics.distance.toFixed(1)} km, and ${metrics.emissions.toFixed(2)} kg CO2.`,
     evidence: deriveDecisionEvidence(result, adjustmentRequest),
     reviewPrompt:
       result.decisionStatus === 'approved'
         ? 'Approved for dispatch.'
-        : 'Review the route rationale below before approving or requesting an adjustment.',
+        : result.decisionStatus === 'updated_proposal'
+          ? 'Review the updated tradeoff below before dispatching or keeping the earlier proposal.'
+          : 'Review the proposal, then approve it or request an adjustment.',
     changeLabel: adjustmentRequest?.label,
     overrideDelta: result.overrideDelta,
     driverMessage: result.driverMessage,

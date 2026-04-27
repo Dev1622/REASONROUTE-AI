@@ -1,0 +1,105 @@
+SHADOW PILOT FINAL FEATURES - NEW AIM
+
+Core product rule:
+- Every feature must strengthen the Reasoning Engine, the Negotiation UI, or the Tribal Knowledge Flywheel.
+
+========================================
+TIER 1 - MUST SHOW THE CORE PRODUCT
+========================================
+
+1. ROUTE REVIEW AND APPROVAL WORKFLOW
+- Proposed route state
+- Review before dispatch
+- Approve route
+- Request adjustment
+
+2. WHY THIS ROUTE
+- Plain-language explanation for why the route was chosen
+- Explanation tied to real operational evidence
+- Fallback-aware wording when route certainty is weaker
+
+3. OVERRIDE COST DELTA
+- Before a dispatcher confirms an adjustment, show the tradeoff
+- Time delta
+- Distance delta
+- Emissions delta
+- Estimated cost impact where available
+
+4. TRIBAL KNOWLEDGE CAPTURE
+- Quick adjustment tags
+- Optional note
+- Persist the reason for adjustment in a structured way
+- Treat dispatcher corrections as product intelligence, not just UI actions
+
+5. ORIGINAL VS ADJUSTED PROPOSAL COMPARISON
+- Show what changed
+- Show why it changed
+- Keep prior proposal context visible
+
+6. REAL DATA INGEST
+- Support real org CSV/XLSX/JSON inputs
+- Strong validation for messy upload formats
+- Keep intake realistic enough for shadow pilot use
+
+========================================
+TIER 2 - PILOT CREDIBILITY LAYER
+========================================
+
+7. ROAD-SNAPPED ROUTING + DIAGNOSTICS
+- Real road routing
+- Provider visibility
+- Fallback warnings
+
+8. GEOBLOCK / BLOCKED-ROAD NEGOTIATION
+- Let dispatchers express blocked-corridor knowledge
+- Reroute with explanation
+- Treat this as structured human correction
+
+9. DRIVER-FACING ONE-LINE EXPLANATION EXPORT
+- Include a simple route reason in manifest/export
+- Keep it downstream and lightweight
+
+10. EXPORTABLE PILOT EVIDENCE
+- Route summary
+- Manifest
+- GeoJSON or route geometry
+- Decision status
+- Adjustment reason
+- Driver message
+- Diagnostics
+
+11. PILOT EVIDENCE REPORTING
+- Run count
+- Approvals
+- Adjustments
+- Reroutes
+- Aggregate deltas
+- Fallback rate
+
+========================================
+TIER 3 - ONLY BUILD IF IT DIRECTLY SUPPORTS THE THESIS
+========================================
+
+12. SCENARIO-DRIVEN DATA READINESS
+- Service time only if it helps the engine explain feasibility or infeasibility
+- Time windows only if they can be surfaced in reasoning
+- Dispatcher notes passthrough because they support explanation and manifests
+
+13. PREMIUM UX FOR NEGOTIATION
+- Proposal status is always visible
+- Smooth transitions for updated proposals
+- Map stays central
+- Adjustment flow feels premium and inviting, not cluttered
+
+========================================
+OUT OF CURRENT SHADOW PILOT SCOPE
+========================================
+
+- Full enterprise routing parity
+- Full TMS replacement
+- Full autonomous rerouting
+- Driver app
+- Customer notification product
+- Real RLHF retraining pipeline
+- Full HOS engine unless directly needed for current pilot scenario
+- Broad constraint expansion that does not strengthen explanation

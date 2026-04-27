@@ -1,0 +1,38 @@
+PRODUCT CORE THESIS
+
+What we are actually building:
+- A Glass Box routing engine for dispatchers.
+- A negotiation layer between route planning output and human operational judgment.
+- A system that explains route choices, quantifies the cost of overrides, and captures tribal knowledge from dispatcher decisions.
+
+What problem we solve:
+- Legacy routing systems are black boxes.
+- Dispatchers are forced into a binary choice:
+  accept the route as-is, or manually override it.
+- When they override, they usually change assignment or sequence without seeing the financial or operational tradeoff.
+- This creates the Trust-Profit Gap:
+  the company protects SLA decisions in the moment, but silently leaks margin through cost-blind manual changes.
+
+What makes us different:
+- We do not replace the dispatcher.
+- We do not present the route as a final answer.
+- We expose the why, show the cost delta of changes, and turn dispatcher judgment into structured product intelligence.
+
+What the product is not:
+- Not just a better route optimizer.
+- Not just a dashboard for fleet metrics.
+- Not a black-box autopilot for dispatch.
+- Not a generic logistics software layer competing feature-for-feature with legacy suites.
+
+The new product identity:
+- Glass Box routing
+- Dispatcher-first negotiation UI
+- Cost-delta visibility
+- Tribal knowledge capture
+- Human-in-the-loop learning flywheel
+
+The moat:
+- Tribal Knowledge Data Moat
+- Workflow integration and switching costs
+- Trust-first brand position
+- Reinforcement loop from dispatcher approval and adjustment behavior

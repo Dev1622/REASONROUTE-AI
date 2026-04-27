@@ -273,13 +273,13 @@ const App: React.FC = () => {
           </div>
 
           <div className="absolute left-8 top-8 rounded border border-violet-500/20 bg-slate-900/85 px-3 py-1 text-xs font-mono text-slate-300 backdrop-blur">
-            AI PROPOSAL <span className="text-violet-300">|</span> EXPLAINABLE ROUTING
+            GLASS BOX REVIEW <span className="text-violet-300">|</span> NEGOTIATED ROUTING
           </div>
           <div className="pointer-events-none absolute inset-x-6 bottom-6 z-30">
             {activeResult && activeResult.metrics ? (
               <div className="pointer-events-auto rounded-2xl border border-slate-800 bg-slate-900 p-4 shadow-[0_20px_60px_-25px_rgba(0,0,0,0.75)]">
                 <div className="mb-3 flex items-center justify-between">
-                  <div className="text-xs font-bold uppercase tracking-wider text-slate-500">Decision Evidence</div>
+                  <div className="text-xs font-bold uppercase tracking-wider text-slate-500">Proposal Decision Summary</div>
                   <button
                     type="button"
                     className="rounded border border-slate-700 px-2 py-1 text-[10px] font-mono text-slate-300 hover:bg-slate-800"
@@ -290,10 +290,10 @@ const App: React.FC = () => {
                 </div>
                 {metricsCollapsed ? (
                   <div className="flex flex-wrap items-center gap-4 text-sm font-mono text-slate-300">
-                    <span>{activeResult.comparison?.headline ?? 'Route evidence ready'}</span>
+                    <span>{activeResult.comparison?.headline ?? 'Proposal evidence ready'}</span>
                     <span className="text-slate-500">Distance {activeResult.metrics.optimized.distance.toFixed(1)} km</span>
                     <span className="text-slate-500">Time {activeResult.metrics.optimized.time.toFixed(1)} min</span>
-                    <span className="text-slate-500">{activeResult.optimizedRoutes.length} routes</span>
+                    <span className="text-slate-500">{activeResult.optimizedRoutes.length} vehicles</span>
                   </div>
                 ) : (
                   <MetricsDashboard

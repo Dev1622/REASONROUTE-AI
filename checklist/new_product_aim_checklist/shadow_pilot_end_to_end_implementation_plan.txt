@@ -1,0 +1,356 @@
+﻿SHADOW PILOT END-TO-END IMPLEMENTATION PLAN
+
+Purpose:
+- Build ReasonRoute exactly around the redefined product aim.
+- Make the product ready for shadow-pilot use with real organizational fleet data.
+- Ensure the UI, workflow, reasoning, and evidence all reinforce the Glass Box negotiation thesis.
+
+Core product rule:
+- We are not building "better routing software."
+- We are building the dispatcher negotiation layer that sits between black-box route planning and human operational judgment.
+- Every implementation choice must strengthen one of these:
+  - explanation
+  - cost-delta visibility
+  - tribal knowledge capture
+  - shadow-pilot proof of the Trust-Profit Gap
+
+========================================
+1. TARGET PRODUCT EXPERIENCE
+========================================
+
+The product should feel like this:
+- A dispatcher opens the system and sees a proposed route plan.
+- The plan is not presented as a command.
+- The system explains why the route was chosen.
+- The dispatcher can approve it or request an adjustment.
+- If they request a change, they see the cost and tradeoff before confirming.
+- Their reason is captured in structured form.
+- The updated proposal appears with refreshed explanation.
+- The system keeps evidence of what changed and why.
+
+The product should not feel like this:
+- giant operational control panel
+- route planner with too many controls
+- black-box optimizer with a decorative explanation block
+- generic logistics feature checklist
+
+========================================
+2. SHADOW PILOT OUTCOME
+========================================
+
+What the shadow pilot must prove:
+1. Legacy route review is black-box and binary.
+2. ReasonRoute introduces a middle layer:
+   explain -> negotiate -> quantify -> capture.
+3. Manual overrides are not free.
+4. Dispatcher reasoning can be captured as reusable product intelligence.
+5. Real organizational data can flow through the system without breaking the workflow.
+
+Shadow pilot success criteria:
+- Real org data can be ingested and validated.
+- Proposed routes are visible and explainable.
+- Adjustments can be previewed and confirmed.
+- Cost delta is shown before override.
+- Reason tags and notes are captured.
+- Updated proposal retains comparison with prior proposal.
+- Evidence exports are usable for organizational review.
+- Pilot summary can show how the Trust-Profit Gap appears in practice.
+
+========================================
+3. IMPLEMENTATION PHASES
+========================================
+
+PHASE 1 - LOCK THE PRODUCT THESIS INTO THE UI
+
+Goal:
+- Make the negotiation layer unmistakably central.
+
+Build:
+1. Proposal-first layout
+- Proposal status always visible
+- Map always visible
+- Why This Route always visible
+- Approve / Request Adjustment always near the explanation
+
+2. Stronger naming and copy
+- Use Glass Box / explained route language where appropriate
+- Remove any remaining generic route-planner framing
+- Keep the product centered on negotiation, trust, and tradeoffs
+
+3. Premium interaction flow
+- Smooth transition from proposed route to updated proposal
+- Adjustment panel should feel deliberate, not cluttered
+- Lower-priority sections should not crowd the review flow
+
+Definition of done:
+- A first-time viewer immediately understands that the product is about reviewing and negotiating route decisions, not just generating them.
+
+----------------------------------------
+PHASE 2 - COMPLETE THE NEGOTIATION LAYER
+----------------------------------------
+
+Goal:
+- Make dispatcher interaction the core product engine.
+
+Build:
+1. Approve / Request Adjustment workflow
+- Proposed route state
+- Approved route state
+- Updated proposal state
+
+2. Cost delta visibility
+- Show time, distance, emissions, and estimated cost delta before confirming an adjustment
+- Use plain language to explain the consequence of the override
+
+3. Tribal knowledge capture
+- Quick tags first
+- Optional note second
+- Save both in structured form
+
+4. Previous vs updated proposal context
+- Preserve prior plan
+- Show what changed
+- Show why it changed
+
+Definition of done:
+- A dispatcher can review a route, understand the logic, request a change, see the tradeoff, and confirm the change without losing context.
+
+----------------------------------------
+PHASE 3 - STRENGTHEN EXPLANATION QUALITY
+----------------------------------------
+
+Goal:
+- Make explanation the product, not a debug byproduct.
+
+Build:
+1. Better decision summary
+- Clear headline
+- Plain-language evidence
+- Confidence-aware wording
+
+2. Fallback-aware messaging
+- If routing falls back or confidence is weaker, the explanation must soften claims
+
+3. Reasoning categories
+- operational efficiency
+- traffic / disruption handling
+- sequence / assignment logic
+- cost delta after override
+- blocked-corridor or geoblock logic
+
+4. Explain infeasibility honestly
+- If a route cannot satisfy a real constraint, say so explicitly
+- Do not silently pretend optimization succeeded
+
+Definition of done:
+- The explanation helps a dispatcher defend the route decision or the route adjustment to management.
+
+----------------------------------------
+PHASE 4 - REAL ORG DATA READINESS
+----------------------------------------
+
+Goal:
+- Make the system safe and believable with messy organizational fleet data.
+
+Build:
+1. Intake validation
+- malformed CSV/XLSX/JSON detection
+- missing coordinates or invalid address fields
+- duplicate or malformed stops
+- depot / first-row validation where needed
+
+2. Input fields that matter now
+- stop labels
+- coordinates or raw address for later geocoding path
+- service-time-ready schema support
+- notes passthrough
+- time-window-ready schema support
+
+3. Preserve planning context
+- Original input should survive through optimize, reroute, and export
+
+4. Error UX
+- Clear user-facing validation messages
+- No silent failures
+
+Definition of done:
+- A messy but realistic org dataset can be brought into the product with understandable correction guidance.
+
+----------------------------------------
+PHASE 5 - PILOT EVIDENCE AND ARTIFACTS
+----------------------------------------
+
+Goal:
+- Make the shadow pilot reviewable by the organization and by us.
+
+Build:
+1. Exportable route evidence
+- route summary
+- decision state
+- adjustment reason
+- notes
+- driver-facing line
+- diagnostics
+
+2. Pilot summary reporting
+- total runs
+- approvals
+- adjustments
+- reroutes
+- aggregate deltas
+- fallback rate
+
+3. Trust-Profit framing in outputs
+- old route vs updated route
+- cost delta of manual change
+- reasoning for adjustment
+
+Definition of done:
+- After a shadow-pilot run, we can hand over a clear artifact showing what ReasonRoute proposed, what changed, and what the tradeoff was.
+
+----------------------------------------
+PHASE 6 - REASONING-SUPPORTIVE OPERATIONAL CONSTRAINTS
+----------------------------------------
+
+Goal:
+- Add only the operational data that strengthens the reasoning engine for the pilot.
+
+Build now if directly useful:
+1. Dispatcher notes passthrough
+2. Service time support
+3. Strict time-window visibility and enforcement messaging
+4. Geoblock / blocked corridor support
+
+Build only after core workflow is stable:
+1. Raw address geocoding
+2. Multi-dimensional capacity
+3. Vehicle attribute matching
+4. Basic HOS cutoff
+
+Rule:
+- If a constraint does not materially improve explanation, negotiation, or pilot credibility, do not prioritize it ahead of the core product.
+
+Definition of done:
+- Constraints in the pilot are present because they help the AI explain or challenge a route decision, not because enterprise software usually has them.
+
+========================================
+4. UI / UX IMPLEMENTATION DIRECTION
+========================================
+
+The UI should feel premium, calm, and interactive.
+
+Primary layout:
+- Top: route proposal state and negotiation context
+- Center: map
+- Beside or below map: Why This Route
+- Immediately after explanation: Approve / Request Adjustment
+
+Secondary layout:
+- lower section switch or progressive disclosure for:
+  - Pilot Evidence
+  - Diagnostics
+  - Exports
+  - Recent Runs
+
+UI rules:
+- Do not hide the active route review flow behind tabs.
+- Do not overload the left panel with everything.
+- The dispatcher should never hunt for the new proposal.
+- Motion should support clarity:
+  - updated proposal transition
+  - selected-route emphasis
+  - active truck marker if it improves readability
+
+Premium design principles:
+- smooth transitions
+- deliberate spacing
+- strong hierarchy
+- product-grade explanation cards instead of raw debug feel
+- no flashy motion that weakens trust
+
+========================================
+5. ENGINEERING WORKSTREAMS
+========================================
+
+Frontend workstream:
+- route review hierarchy
+- better explanation UI
+- adjustment preview and confirm flow
+- pilot evidence UI
+- premium interaction polish
+
+Backend workstream:
+- stronger validation
+- richer decision summary generation
+- cost delta calculation
+- adjustment reason persistence model
+- export payload enrichment
+
+Reasoning workstream:
+- explanation quality
+- fallback-aware messaging
+- infeasibility surfacing
+- scenario-specific route rationale
+
+Data readiness workstream:
+- real-data schema support
+- import validation
+- notes passthrough
+- service-time / time-window-ready model extensions
+
+========================================
+6. SHADOW PILOT ACCEPTANCE CHECKLIST
+========================================
+
+The product is shadow-pilot ready only when all of these are true:
+
+1. A real org dataset can be imported without confusing silent failures.
+2. The system produces a clear proposed route with plain-language explanation.
+3. The dispatcher can request adjustment using tags and optional notes.
+4. The override cost delta is visible before confirmation.
+5. The updated proposal is shown without losing prior context.
+6. The adjustment reason is captured in structured form.
+7. Exports show decision state, reason, and explanation.
+8. Pilot evidence summarizes approvals, overrides, reroutes, and deltas.
+9. The UI feels like a negotiation product, not a cluttered route-planner dashboard.
+10. The end-to-end workflow works with real organizational fleet data.
+
+========================================
+7. WHAT NOT TO DO WHILE IMPLEMENTING
+========================================
+
+Do not:
+- chase enterprise feature parity first
+- add logistics constraints that do not strengthen explanation
+- bury Request Adjustment behind secondary UI
+- make the explanation look like debug logs
+- let the product drift back into generic route optimization software
+
+========================================
+8. IMMEDIATE BUILD ORDER
+========================================
+
+Week 1 focus:
+1. Route review hierarchy
+2. Why This Route polish
+3. Override cost delta as core flow
+4. Tribal knowledge capture
+5. Updated proposal comparison
+
+Week 2 focus:
+1. Real-data intake hardening
+2. Notes passthrough
+3. Export improvements
+4. Pilot evidence summary
+5. Fallback-aware explanation quality
+
+Week 3 focus:
+1. Service time support
+2. Time-window visibility / infeasibility explanation
+3. UI polish for premium feel
+4. End-to-end shadow-pilot simulation with real org-style data
+
+Final rule:
+- We should be able to look at every implemented feature and answer:
+  "How does this help the AI explain, negotiate, quantify, or learn from route decisions?"
+- If we cannot answer that clearly, it is not core to this build.

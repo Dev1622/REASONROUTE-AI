@@ -1,0 +1,34 @@
+CURRENT STATUS AGAINST NEW AIM
+
+What we already have that fits the new thesis:
+- Route proposal and review flow
+- Approve / request adjustment model
+- Why This Route style reasoning layer
+- Override delta direction in the product flow
+- Tribal Knowledge Tags concept
+- Driver-facing one-line explanation export
+- Geoblock rerouting as human correction input
+- Pilot evidence/session reporting direction
+
+What is partially there but needs sharper alignment:
+- The UI still carries some older route-planner framing in places.
+- Cost delta needs to be treated as core product, not just one adjustment detail.
+- Adjustment logging needs to be thought of as moat-building, not only UX state.
+- Exports need to reflect the negotiation-layer thesis more clearly.
+- Intake and operational constraints should be justified by explanation value, not by feature parity.
+
+What is not yet truly implemented for the new thesis:
+- Persistent structured storage of adjustment reasons for future learning
+- A shadow-pilot story explicitly centered on trust-profit leakage
+- A pilot output that clearly quantifies cost-blind override behavior
+- A clean product narrative in every checklist and planning file outside this folder
+
+What we should say truthfully right now:
+- The product is moving toward the correct thesis.
+- The core Glass Box workflow is implementable and partially built.
+- The moat-building behavior capture layer is not fully complete yet.
+
+Immediate next implementation intent:
+- Build the negotiation layer first.
+- Treat reasoning, cost delta, and adjustment capture as the core feature set.
+- Add operational constraints only when they make the explanation engine smarter.

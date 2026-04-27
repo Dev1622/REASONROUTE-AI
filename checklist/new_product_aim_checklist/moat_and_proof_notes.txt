@@ -1,0 +1,48 @@
+MOAT AND PROOF NOTES
+
+How we arrived at the thesis:
+- Dispatchers are the final gatekeepers before routes reach drivers.
+- In current systems, they review routes and manually override by changing assignment or stop sequence.
+- They usually do not redraw turn-by-turn driving paths.
+- Once they override, the system typically just accepts the forced sequence and recalculates ETA and mileage.
+- The software does not explain the tradeoff or show the cost of the change.
+
+This is the core workflow truth:
+- Black box route recommendation
+- Manual drag-and-drop override
+- No cost visibility
+- No structured knowledge capture
+
+That creates the Trust-Profit Gap:
+- Dispatchers protect service outcomes using intuition.
+- The business loses margin because the cost of those changes is hidden.
+
+Core proof-backed product claims we can stand behind:
+- Legacy routing workflows are generally review-and-approve, not full blind automation.
+- Manual overrides commonly happen through assignment and sequencing.
+- Existing software usually recalculates the locked route rather than negotiating the decision with the dispatcher.
+- The middle layer between "accept" and "override" is underbuilt.
+
+Claims that are strong as thesis but still need careful wording:
+- "No major player explains routes in a dispatcher-facing reasoning UI."
+- "We are the first Glass Box."
+- "Every override widens the moat."
+
+How to speak about them:
+- Use them as positioning statements, not unqualified market facts.
+- Prefer language like:
+  - "Current tools largely act like black boxes"
+  - "We have not seen commercial dispatcher-first reasoning UIs become standard"
+  - "Our moat grows as dispatcher corrections become structured training data"
+
+The moat, clearly:
+1. Tribal Knowledge Data Moat
+2. Workflow Integration Moat
+3. Trust-First Brand Moat
+4. Human Feedback Flywheel
+
+Best YC-style phrasing:
+- Competitors are building robots to replace the dispatcher.
+- We are building an exoskeleton to empower them.
+- Our moat is not the code.
+- Our moat is the proprietary dataset of human logistics intuition captured through negotiated route decisions.
