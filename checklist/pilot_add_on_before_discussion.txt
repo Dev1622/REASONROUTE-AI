@@ -1,0 +1,284 @@
+﻿PILOT ADD ON BEFORE DISCUSSION
+
+Purpose:
+Capture the product discussion around what must be added before the shadow pilot feels operationally credible with real dispatchers and real organizational data.
+
+Core idea:
+The product should not just accept stop name, lat, and lng. A credible shadow pilot must begin to respect the kinds of messy, real operational constraints dispatchers actually work with.
+
+Why this matters:
+If ReasonRoute ignores real-world operational fields, the routes may look mathematically clean but will feel broken to a dispatcher.
+
+========================================
+PRIORITY 1 - THE NON-NEGOTIABLES
+Build these for the May 24 pilots.
+If these are missing, the routes will be fundamentally broken in the eyes of a dispatcher.
+========================================
+
+1. STOP SERVICE TIME (DWELL TIME)
+
+The logic:
+- If a truck has 20 stops and each takes 15 minutes to unload, that is 5 hours of non-driving time.
+
+The gap:
+- The engine currently treats stops as taking 0 minutes.
+- ETAs will be too early.
+- Routes will be over-scheduled.
+
+Why it matters:
+- This is one of the fastest ways to lose dispatcher trust.
+
+2. RAW ADDRESS GEOCODING
+
+The logic:
+- Real organizations will not hand over clean lat/lng.
+- They will give addresses like:
+  - "123 Industrial Way, Suite B"
+  - "Gate 4, behind the mall, NY 10001"
+
+The gap:
+- A middleware layer is needed in geminiService.ts or a dedicated geocodingService.ts.
+- It should call a real geocoding API such as Mapbox or Google before the data reaches the routing engine.
+
+Why it matters:
+- If the dispatcher must manually convert addresses to coordinates, the pilot becomes painful before it even begins.
+
+3. STRICT TIME WINDOWS (SLA BASICS)
+
+The logic:
+- Some stops must be delivered inside a hard window such as 08:00 to 10:00.
+
+The gap:
+- There is a type-level notion of time windows, but not enough real enforcement.
+- If the AI proposes a stop at 11:00 for a 10:00 deadline, the system must clearly call that out.
+
+Why it matters:
+- The reasoning log should explicitly surface things like:
+  - SLA violation
+  - infeasible arrival
+  - reroute required
+
+4. DISPATCHER NOTES PASSTHROUGH
+
+The logic:
+- Dispatchers preserve important operational notes such as:
+  - gate code
+  - rear dock only
+  - call security before arrival
+
+The gap:
+- CSV parsing and export flow must capture these notes and preserve them all the way through to the manifest and HTML export.
+
+Why it matters:
+- This is operational truth, not cosmetic metadata.
+
+========================================
+PRIORITY 2 - ENTERPRISE CREDIBILITY LAYER
+These prove the product can handle mid-market complexity beyond a simple van-routing demo.
+========================================
+
+5. MULTI-DIMENSIONAL CAPACITY (WEIGHT VS VOLUME)
+
+The logic:
+- A truck can be full because it is too heavy or because it is physically out of space.
+
+The gap:
+- The current system uses a single vehicleCapacity scalar.
+- It should evolve toward a richer structure such as:
+  - weightKg
+  - volumeM3
+  - pallets
+
+Why it matters:
+- This is one of the clearest signs of operational maturity.
+
+6. VEHICLE ATTRIBUTES (THE REEFER MATCH)
+
+The logic:
+- If a stop requires refrigeration, it cannot be assigned to a dry van.
+- Similar logic applies to liftgate, flatbed, and other vehicle capabilities.
+
+The gap:
+- A matching filter is needed in reasonRouteEngine.ts so infeasible vehicles are excluded or penalized.
+
+Why it matters:
+- Without this, the product can generate routes that look good but fail in reality.
+
+7. BASIC HOS (SHIFT LEGALITY)
+
+The logic:
+- No route should exceed the driver’s legal drive limit.
+- A simple first rule is enough for now, such as an 11-hour hard drive-time cutoff.
+
+The gap:
+- The engine needs a basic legality check and route cutoff behavior.
+
+Why it matters:
+- Even a first-pass HOS legality layer makes the system feel much more real to operators.
+
+========================================
+PRIORITY 3 - THE BILLION-DOLLAR VISION
+Do not build these yet.
+These are future-phase items, not immediate shadow-pilot blockers.
+========================================
+
+8. PICKUP VS DROPOFF STATE MODEL
+- Needed to model how a truck gets lighter and heavier throughout the day.
+- Important for reverse logistics and more advanced route state.
+
+9. HAZMAT COMPATIBILITY
+- Needed for regulated goods and compatibility constraints.
+- High-value later, but not mandatory for the immediate pilot.
+
+10. SLA PENALTY COSTING
+- Needed to rank stops by financial pain if missed.
+- Great future explainability layer, but not required before core SLA support is in place.
+
+========================================
+THE STRATEGY - SCAFFOLDING THE TRUTH
+========================================
+
+Key idea:
+- For the May 24 shadow pilots, the goal is not perfect enterprise automation.
+- The goal is to ensure the system can see real operational columns, respect them, and explain the consequences.
+
+Most important product principle from this discussion:
+- Even if the AI cannot find a perfect route, it is more credible if it explains why the route is infeasible than if it silently ignores the constraint.
+
+Example of credible behavior:
+- "I could not fit this stop because the 15-minute service time pushes the next stop into an SLA violation."
+
+Why this is powerful:
+- It aligns perfectly with the explainable-AI identity of the product.
+- It makes failure modes feel trustworthy instead of incompetent.
+
+========================================
+RECOMMENDED NEXT ARTIFACT
+========================================
+
+Suggested next file to create:
+- Shadow_Pilot_Data_Schema.md
+or
+- shadow_pilot_data_schema.txt
+
+What it should define:
+- what columns the engine should accept next week
+- which are required vs optional
+- which are shadow-pilot-now vs later-phase fields
+- what the engine must do when each field is present
+
+Final take:
+This discussion sharpens the product in the right direction. It moves ReasonRoute from clean-coordinate optimization toward real dispatch-grade operational credibility, while still keeping the product centered on explainable route decisions.
+
+========================================
+ADDITIONAL ADD-ON FEATURES (ORGANIZED)
+========================================
+
+Purpose:
+- Capture high-leverage add-on ideas discussed for post-shadow-pilot product differentiation.
+- Keep timing explicit so current pilot scope does not get diluted.
+
+----------------------------------------
+A) BLAST RADIUS REROUTE (EXCEPTION MANAGEMENT)
+----------------------------------------
+
+Problem:
+- A single truck delay can cause cascading downstream SLA failures.
+- Dispatchers currently have to manually orchestrate rescue moves across other vehicles.
+
+Feature concept:
+- When delay is added on the map, instantly project downstream SLA failures.
+- Propose multi-vehicle rescue plan with explanation.
+
+Example output:
+- "Truck 4 delayed by 90 mins; 3 SLA failures predicted. Move Stops B and C to Truck 7. Reason: Truck 7 is 4 miles away, has capacity, rescues all 3 SLAs, adds only 12 mins."
+
+Build timing:
+- Later (Phase 2+), not a May 24 blocker.
+
+Claim confidence:
+- High value and strong enterprise relevance; requires live delay state, cross-vehicle reassignment, and richer SLA modeling.
+
+----------------------------------------
+B) DRIVER EMPATHY SCORE (RETENTION + FATIGUE SIGNAL)
+----------------------------------------
+
+Problem:
+- Dispatch decisions that ignore fatigue and home-time predictability can increase churn risk.
+
+Feature concept:
+- Add a "Driver Impact" explanation tag in route decision evidence.
+- Example tag:
+  - "Driver fatigue avoided: keeps assigned driver under shift threshold and returns earlier."
+
+Build timing:
+- Later (Phase 2+), after HOS/driver-state fundamentals are reliable.
+
+Claim confidence:
+- Strong buyer narrative; do not over-claim retention impact without pilot data.
+
+----------------------------------------
+C) PLANNED VS ACTUAL REPLAY (TRUST + OVERRIDE LEARNING)
+----------------------------------------
+
+Problem:
+- Teams override the algorithm without clear feedback loop on whether override helped or hurt.
+
+Feature concept:
+- Weekly scorecard comparing AI suggestion vs dispatcher override vs actual GPS outcomes.
+- Report both wins and losses with quantified impact.
+
+Build timing:
+- Later (Phase 2+), requires actual telemetry and override history.
+
+Claim confidence:
+- Strong trust mechanic; should be evidence-led, not punitive.
+
+----------------------------------------
+D) CUSTOMER-FACING SHIELD (EXPLAINED ETA UPDATES)
+----------------------------------------
+
+Problem:
+- Silent ETA changes trigger "Where is my order?" call volume.
+
+Feature concept:
+- Push sanitized explainability payload to customer tracking/WhatsApp channel.
+- Example:
+  - "ETA updated to 4:15 PM. Reason: rerouted to avoid major accident; fastest safe alternative active."
+
+Build timing:
+- Later (Phase 2+), after stable eventing + notification path exists.
+
+Claim confidence:
+- High practical value; avoid hard call-volume/cost claims unless measured in pilot.
+
+========================================
+ADD-ON PRIORITY ORDER (POST SHADOW PILOT)
+========================================
+
+1. Blast Radius Reroute
+2. Planned vs Actual Replay
+3. Customer-Facing Shield
+4. Driver Empathy Score
+
+Reason for ordering:
+- First two deepen core dispatch intelligence and trust loop directly.
+- Third extends explainability to external communication.
+- Fourth becomes most credible after stronger HOS + driver-state modeling.
+
+========================================
+FACT-CHECKING GUIDELINE FOR PITCH USE
+========================================
+
+Use strong certainty:
+- FMCSA HOS rule framing and legality context.
+- Operational pain from cascading delays and exception handling.
+- Algorithmic aversion as a real trust challenge.
+
+Use cautious language unless measured in own pilot:
+- Exact WISMO percentages and per-call cost.
+- Exact driver replacement cost ranges for all fleets.
+- Guaranteed churn reduction or fixed hours saved.
+
+Recommended wording pattern:
+- "Can reduce" / "typically" / "often" instead of "always" or hard universal numbers.

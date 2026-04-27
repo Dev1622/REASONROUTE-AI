@@ -1,0 +1,326 @@
+OPERATIONAL CREDIBILITY PLAN
+
+Purpose:
+Define the next implementation plan for moving ReasonRoute AI from a strong explainable-routing prototype toward a real operationally credible product, while keeping the immediate shadow pilot focused and realistic.
+
+Core product rule:
+Do not let enterprise constraint work change the product's aim.
+All new operational logic must strengthen the core story:
+- propose routes
+- explain why they were chosen
+- respect real-world constraints
+- reduce blind dispatcher overrides
+
+========================================
+PARTIALLY SUPPORTED TODAY
+========================================
+
+These concepts exist in some form today, but are not complete enough for real operations:
+
+1. Capacity
+- Current state:
+  - Single scalar vehicle capacity exists.
+  - Scalar per-stop demand exists.
+- Gap:
+  - No weight vs volume vs pallets model.
+  - No pickup/dropoff load evolution.
+
+2. Time Window / Shift Constraint Scaffolding
+- Current state:
+  - Generic constraint types exist such as timeWindow and driverShift.
+- Gap:
+  - No full stop-by-stop enforcement in the actual route construction/output path.
+  - No hard SLA violation logic in reasoning output.
+
+3. Multi-vehicle routing / fleet setup
+- Current state:
+  - Vehicle count and labels are supported.
+- Gap:
+  - Vehicles are not modeled with operational attributes.
+
+========================================
+MUST BUILD NEXT FOR REAL OPERATIONAL CREDIBILITY
+========================================
+
+These are the next modules to implement if the product is going to look credible when real operators hand over real data.
+
+========================================
+PRIORITY 1 - NON-NEGOTIABLES
+Build these first.
+These are the minimum operational credibility layer for shadow-pilot-quality enterprise data.
+========================================
+
+1. RAW ADDRESS GEOCODING MIDDLEWARE
+
+Why it matters:
+- Real organizations will not provide clean lat/lng for every stop.
+- They will provide address strings, site names, suite numbers, and messy dispatch notes.
+
+What to build:
+- A dedicated geocoding preprocessing step before route optimization.
+- Prefer a new geocoding service, such as:
+  - services/geocodingService.ts
+
+Implementation direction:
+- During CSV/XLSX/JSON ingestion, detect rows missing valid coordinates.
+- Resolve raw address text using a geocoding provider such as Mapbox or Google.
+- Return:
+  - resolved lat/lng
+  - normalized address
+  - confidence / geocode status
+  - geocoding warnings for failed or ambiguous rows
+- Carry this through to validation and exports.
+
+Acceptance criteria:
+- Input files without coordinates can still be optimized if the address resolves successfully.
+- Unresolved addresses are surfaced clearly before optimization.
+- Dispatcher does not need to manually geocode every stop.
+
+2. STOP SERVICE TIME / DWELL TIME
+
+Why it matters:
+- Real ETAs are broken if the engine assumes every stop takes 0 minutes.
+
+What to build:
+- A serviceTimeMins field for every stop.
+
+Implementation direction:
+- Extend stop parsing/input model to accept:
+  - serviceTimeMins
+- Default reasonably if missing for pilot mode:
+  - configurable default service time
+- Update route timing calculation so:
+  - arrival time + service time = departure time
+- Reflect dwell time in:
+  - ETA calculations
+  - route feasibility
+  - explanation output
+  - exports/manifests
+
+Acceptance criteria:
+- Route duration reflects both drive time and stop service time.
+- ETAs and total route time visibly change when service time changes.
+
+3. STRICT SLA / HARD TIME WINDOW ENFORCEMENT
+
+Why it matters:
+- Dispatchers lose trust immediately if the AI proposes a route that misses a hard delivery window.
+
+What to build:
+- Hard time-window enforcement for stop-level SLA windows.
+
+Implementation direction:
+- Extend stop input model to accept:
+  - windowStart
+  - windowEnd
+  - windowType
+- Support at minimum:
+  - strict window
+- During route evaluation:
+  - compute arrival time per stop
+  - flag violation if arrival is outside the hard window
+- The reasoning layer must explicitly call this out.
+- The comparison/review layer must show a strong warning for SLA violations.
+
+Acceptance criteria:
+- Any route violating a hard window is clearly marked.
+- Reasoning output explicitly mentions SLA violations.
+- Dispatcher cannot mistake a broken route for a valid recommendation.
+
+4. DISPATCHER NOTES PASSTHROUGH
+
+Why it matters:
+- Notes like gate codes, security instructions, or dock instructions are operationally essential.
+
+What to build:
+- Stop-level notes ingestion and passthrough.
+
+Implementation direction:
+- Extend import parsing to capture:
+  - notes
+  - instructions
+- Persist these notes through:
+  - parsed stops
+  - optimization context
+  - manifests
+  - HTML summary export
+- Keep them visible but secondary in UI.
+
+Acceptance criteria:
+- Dispatcher notes from uploaded data appear in the final manifest/export.
+- No note is lost between ingestion and output.
+
+5. MANIFEST EXPORT AS A REAL ARTIFACT
+
+Why it matters:
+- A shadow pilot must produce something the organization can inspect and compare against current ops.
+
+What to build:
+- A cleaner, operationally credible driver/dispatcher manifest export.
+
+Implementation direction:
+- Improve the HTML summary/manifest so it includes:
+  - route reason
+  - stop sequence
+  - ETA
+  - service time
+  - dispatcher notes
+  - driver-facing explanation
+  - route status / approval state
+- Keep JSON and GeoJSON exports, but make HTML the primary review artifact.
+
+Acceptance criteria:
+- A pilot reviewer can open the export and understand the plan without opening the app.
+
+========================================
+PRIORITY 2 - ENTERPRISE CREDIBILITY LAYER
+Build after Priority 1.
+These make the system feel mid-market/enterprise capable.
+========================================
+
+6. MULTI-DIMENSIONAL CAPACITY
+
+Why it matters:
+- Real trucks fill by weight, volume, or pallets, not just one scalar.
+
+What to build:
+- Replace single scalar capacity with an object model, such as:
+  - weightKg
+  - volumeM3
+  - pallets
+
+Implementation direction:
+- Extend vehicle model and stop demand model.
+- Route feasibility should check all active capacity dimensions.
+- Explanation should mention the limiting factor where relevant.
+
+Acceptance criteria:
+- Route assignment fails or reranks when any capacity dimension is exceeded.
+
+7. VEHICLE ATTRIBUTE MATCHING
+
+Why it matters:
+- Stops may require reefer, liftgate, flatbed, or similar equipment.
+
+What to build:
+- Vehicle capability tags and stop requirement tags.
+
+Implementation direction:
+- Extend fleet and stop models with attribute arrays.
+- Filter or penalize infeasible assignments in the routing engine.
+- Explanation should mention when a vehicle was selected because it matched a stop requirement.
+
+Acceptance criteria:
+- Incompatible vehicles are not assigned to restricted stops.
+
+8. BASIC HOS / SHIFT LEGALITY
+
+Why it matters:
+- A route that exceeds legal driver limits is not operationally credible.
+
+What to build:
+- A first-pass hard legality layer for driver hours.
+
+Implementation direction:
+- Add driver shift inputs at minimum:
+  - maxDriveMinutes
+  - maxDutyMinutes
+- For the first version, support:
+  - hard drive-time cutoff
+- If a route exceeds limit:
+  - mark it infeasible
+  - surface explicit warning in reasoning
+
+Acceptance criteria:
+- Over-limit routes are visibly flagged as invalid or infeasible.
+
+========================================
+PRIORITY 3 - LATER / NOT NEEDED YET
+Do not build these before the above layers.
+These are important, but they are not required for a credible near-term shadow pilot.
+========================================
+
+9. PICKUP VS DROPOFF STATE MODEL
+- Useful for reverse logistics and dynamic capacity state.
+- Not required for an early credible shadow pilot unless the target pilot explicitly includes returns/pickups.
+
+10. HAZMAT COMPATIBILITY
+- Important for specific industries.
+- Not mandatory for a general shadow pilot unless the partner moves regulated loads.
+
+11. SLA PENALTY COSTING / PRIORITY ECONOMICS
+- Very strong for future route rationale and business prioritization.
+- Not required before core hard-window support is in place.
+
+12. CUSTOMER TIER / VIP PRIORITIZATION
+- Valuable business logic layer.
+- Later build after SLA basics and real stop models exist.
+
+13. ADVANCED FACILITY HOURS / BREAK WINDOWS
+- Lunch closures and site operating-hour windows are important.
+- Can follow strict time-window support as a second-stage extension.
+
+14. DRIVER SKILLS / CERTIFICATIONS
+- Useful for military base, forklift, hazmat, or secure delivery workflows.
+- Later build after vehicle and shift feasibility layers.
+
+15. COMMERCIAL VS RESIDENTIAL STOP TYPE
+- Helpful for service time tuning and truck restrictions.
+- Can be added after service-time infrastructure is live.
+
+========================================
+WHAT TO BUILD NOW VS WHAT CAN WAIT
+Single combined view
+========================================
+
+Build now for real operational credibility:
+- Raw address geocoding middleware
+- Stop service time / dwell time
+- Strict SLA hard time windows
+- Dispatcher notes passthrough
+- Manifest export as a real artifact
+- Multi-dimensional capacity
+- Vehicle attribute matching
+- Basic HOS / shift legality
+
+Partially supported today and should be upgraded:
+- Capacity
+- Time-window constraint scaffolding
+- Driver-shift constraint scaffolding
+- Multi-vehicle fleet setup
+
+Not really needed yet for end-to-end shadow pilot and should be done later:
+- Pickup vs dropoff state model
+- Hazmat compatibility
+- SLA penalty costing
+- Customer tier / VIP prioritization
+- Advanced facility operating hours / lunch closures
+- Driver skills / certifications
+- Commercial vs residential operational modeling
+
+========================================
+RECOMMENDED IMPLEMENTATION ORDER
+========================================
+
+1. Geocoding middleware
+2. Stop service time
+3. Strict hard time windows
+4. Dispatcher notes passthrough
+5. Manifest export improvement
+6. Multi-dimensional capacity
+7. Vehicle attribute matching
+8. Basic HOS legality
+
+Reason:
+- The first five items remove the biggest “this wouldn’t work in real life” objections during shadow pilot review.
+- The next three items add enterprise credibility without forcing the product into full phase-2 complexity.
+
+========================================
+FINAL TAKE
+========================================
+
+What I think about this:
+- This is the right next step if the product is going to be credible with real operations teams.
+- Priority 1 is not “feature expansion”; it is operational truth.
+- Priority 2 is what makes the product look real beyond a small delivery-van demo.
+- Priority 3 should remain future vision until the product reliably handles the operational basics above.
