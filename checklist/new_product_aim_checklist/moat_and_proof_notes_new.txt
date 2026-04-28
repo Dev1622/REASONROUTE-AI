@@ -1,0 +1,83 @@
+MOAT AND PROOF NOTES
+
+How we arrived at the thesis:
+- Dispatchers are the final gatekeepers before routes reach drivers.
+- In current systems, they review routes and often manually override by changing assignment or stop sequence.
+- They usually do not redraw turn-by-turn driving paths.
+- They operate under real time pressure, so the decision moment is rarely a deep analysis exercise.
+- Their working priority is usually:
+  keep the route moving,
+  protect ETA/SLA,
+  get the truck out the door.
+- Once they override, the system typically just accepts the forced sequence and recalculates ETA and mileage.
+- The software does not create a real decision layer around that moment:
+  it does not clearly explain the route logic,
+  it does not show explicit cost tradeoff visibility in the override moment,
+  and it does not help compare whether the original route was actually better.
+
+This is the core workflow truth:
+- Black box route recommendation
+- Fast dispatcher review under time pressure
+- Manual drag-and-drop override when something feels wrong or risky
+- No explicit cost visibility in the actual override decision moment
+- No structured knowledge capture
+- No credible middle layer between:
+  keep the current route,
+  manually override it,
+  or evaluate a better alternative
+
+That creates the real Trust-Profit Gap:
+- Dispatchers protect service outcomes using intuition and speed.
+- The business loses margin because the cost of those changes is hidden or not salient in the moment.
+- The dispatcher's override is not guaranteed to be best.
+- The original route is not guaranteed to be wrong.
+- A better third option may exist, but current tools do not make it easy to discover or evaluate.
+
+The sharper product truth:
+- The gap is not simply that manual review exists.
+- The gap is that dispatchers are forced into a false binary under time pressure.
+- They must either trust the proposed route or override it quickly without a strong way to compare:
+  the original route,
+  the manual override,
+  and a better negotiated alternative.
+
+Core proof-backed product claims we can stand behind:
+- Legacy routing workflows are generally review-and-approve, not full blind automation.
+- Manual overrides commonly happen through assignment and sequencing.
+- Existing software usually recalculates the locked route rather than negotiating the decision with the dispatcher.
+- Dispatchers often make these choices in an ETA-first operating context, not a financial-analysis context.
+- The middle layer between "accept" and "override" is underbuilt.
+
+Claims that are strong as thesis but still need careful wording:
+- "No major player explains routes in a dispatcher-facing reasoning UI."
+- "We are the first Glass Box."
+- "Every override widens the moat."
+- "Manual override behavior directly causes X% cost leakage in all fleets."
+
+How to speak about them:
+- Use them as positioning statements, not unqualified market facts.
+- Prefer language like:
+  - "Current tools largely act like black boxes in the dispatcher decision moment"
+  - "We have not seen commercial dispatcher-first reasoning UIs become standard"
+  - "Our moat grows as dispatcher corrections become structured training data"
+  - "Current tools do not make it easy to compare the proposed route, the manual override, and a better negotiated alternative"
+
+The moat, clearly:
+1. Tribal Knowledge Data Moat
+2. Workflow Integration Moat
+3. Trust-First Brand Moat
+4. Human Feedback Flywheel
+
+Best YC-style phrasing:
+- Competitors are building robots to replace the dispatcher.
+- We are building an exoskeleton to empower them.
+- Our moat is not the code.
+- Our moat is the proprietary dataset of human logistics intuition captured through negotiated route decisions.
+
+Best product-gap phrasing:
+- ReasonRoute does not assume the dispatcher is wrong.
+- ReasonRoute does not assume the original route is right.
+- ReasonRoute creates the missing decision layer that helps the dispatcher evaluate:
+  1. keep the current route
+  2. accept the manual adjustment
+  3. generate a better negotiated alternative

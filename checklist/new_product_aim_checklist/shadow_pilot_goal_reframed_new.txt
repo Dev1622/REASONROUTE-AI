@@ -1,0 +1,60 @@
+SHADOW PILOT GOAL REFRAMED
+
+Old shadow-pilot framing:
+- Prove we can generate better optimized routes from real organizational data.
+
+New shadow-pilot framing:
+- Prove that ReasonRoute exposes the real decision gap inside dispatcher workflow.
+- Show that dispatchers are often forced to make fast route decisions under time pressure, with SLA and ETA pressure dominating the moment.
+- Show that this usually becomes a false binary:
+  keep the proposed route, or manually override it quickly.
+- Show that this override moment is where silent margin leakage begins:
+  the dispatcher is trying to protect service, not run a cost audit.
+- Show that neither side of the binary is guaranteed to be best:
+  the original route may still be the best option on total-cost and constraint logic,
+  and the dispatcher's override may solve the immediate concern but still not be the best alternative.
+- Show that there may be a better third option:
+  an explained, negotiated route that balances ETA, cost, and real-world constraints more intelligently than either the untouched plan or the manual override.
+
+What the shadow pilot must demonstrate:
+1. Real route plans are reviewed by dispatchers before dispatch.
+2. Dispatchers do not have the time or visibility to deeply evaluate every route decision.
+3. Current workflow pushes them toward a fast operational choice:
+   keep the route or override it to protect ETA/SLA.
+4. Manual overrides usually happen through assignment and sequencing changes.
+5. Legacy tools may recalculate ETA or mileage after an override, but they do not create a real decision layer:
+   they do not explain the route clearly,
+   they do not show explicit cost tradeoffs in the override moment,
+   and they do not help compare the original route, the manual override, and a better alternative.
+6. ReasonRoute provides the missing middle layer:
+   explanation, negotiation, cost delta, alternative proposal generation, and structured reason capture.
+
+What success looks like:
+- We can ingest real organizational data.
+- We can show the proposed route and explain why it was chosen.
+- We can help the dispatcher evaluate whether the current route should be kept.
+- We can let the dispatcher request an adjustment instead of blindly dragging stops.
+- We can show the operational and financial cost delta of that adjustment.
+- We can generate a better negotiated alternative when both the original plan and the manual override are weak.
+- We can log why the dispatcher changed it.
+- We can quantify the difference between:
+  blind acceptance,
+  cost-blind manual override,
+  and explained negotiated alternatives.
+
+What the shadow pilot should not become:
+- A giant enterprise-routing rebuild.
+- A feature race against FarEye, Locus, or full TMS suites.
+- A pure optimization benchmark with no human workflow story.
+- A claim that dispatchers are wrong by default.
+- A claim that the original route is always right.
+
+The real output of the pilot:
+- Proof that the explanation is the product.
+- Proof that cost delta changes dispatcher behavior.
+- Proof that the key workflow gap is not just route quality, but decision quality under time pressure.
+- Proof that tribal knowledge can be captured as structured input rather than lost in drag-and-drop overrides.
+- Proof that ReasonRoute can help the dispatcher evaluate three possibilities:
+  keep the current route,
+  accept the manual change,
+  or move to a better negotiated alternative.
