@@ -1,0 +1,398 @@
+END-TO-END UI DECISION PLAN
+
+Purpose:
+- Define the full UI architecture for ReasonRoute across all six implementation phases.
+- Keep the product visually calm, premium, and dispatcher-friendly.
+- Ensure future features fit into a stable hierarchy instead of turning the product into a cluttered routing dashboard.
+
+Core UI rule:
+- The product must always read as a decision and negotiation system first.
+- Routing, evidence, diagnostics, and setup exist to support that moment.
+- The dispatcher should always understand:
+  1. what the current proposal is
+  2. why it was chosen
+  3. what happens if they change it
+  4. what evidence supports the decision
+
+========================================
+1. UI NORTH STAR
+========================================
+
+The final product should feel like:
+- A premium route decision console
+- Calm under pressure
+- Friendly rather than intimidating
+- Fast to scan
+- Easy to trust
+- Serious enough for operations, but not admin-heavy
+
+The final product should not feel like:
+- A generic enterprise dashboard
+- A giant route-planning control panel
+- A cluttered GIS interface
+- A debug console with explanations bolted on
+- A stack of disconnected cards competing for attention
+
+Primary experience goal:
+- A dispatcher should feel guided through a decision, not buried in tools.
+
+========================================
+2. PRIMARY SCREEN ARCHITECTURE
+========================================
+
+Use a stable 3-zone product architecture.
+
+ZONE A - LEFT DECISION RAIL
+Purpose:
+- Hold the active review and negotiation workflow.
+- This is the human decision area.
+
+ZONE B - CENTRAL MAP CANVAS
+Purpose:
+- Show route geometry, focus, blocked corridors, and route evidence spatially.
+- This is the spatial proof area.
+
+ZONE C - SECONDARY EVIDENCE LAYER
+Purpose:
+- Hold lower-priority proof, diagnostics, exports, route sets, and run history.
+- This can live as a lower section within the left rail or as a docked expandable section.
+
+Permanent hierarchy:
+1. Decision workflow
+2. Why this route
+3. Adjustment and tradeoff
+4. Spatial route evidence
+5. Pilot evidence and diagnostics
+6. Setup and configuration
+
+========================================
+3. LEFT DECISION RAIL STRUCTURE
+========================================
+
+The left panel should always follow this order once a proposal exists.
+
+A. Proposal State Header
+- Current decision state: proposed / preview / updated proposal / approved
+- Short proposal headline
+- One-line summary of fleet, ETA, distance, and confidence tone
+
+B. Why This Route
+- Always visible above the fold
+- Plain-language explanation
+- 3 to 4 strongest evidence points
+- No raw debug tone by default
+- Optional debug toggle remains secondary
+
+C. Dispatcher Action Block
+- Approve Route
+- Request Adjustment
+- If preview is active:
+  - Confirm Adjustment
+  - Keep Current Proposal
+- These actions should always sit immediately next to the explanation flow
+
+D. Dispatcher Knowledge Capture
+- Quick tags
+- Optional note
+- Reason should feel lightweight and fast
+- Never feel like a long form or audit burden
+
+E. Tradeoff / Override Delta
+- Show only when relevant
+- Must appear clearly before confirming a change
+- Time delta
+- Distance delta
+- Emissions delta
+- Estimated fuel / cost delta
+- Clear plain-language consequence sentence
+
+F. Driver-Facing Explanation
+- Short downstream explanation
+- Useful for handoff confidence
+
+G. Secondary Evidence Switcher
+- Pilot Evidence
+- Routes
+- Diagnostics
+- Exports
+- Recent runs can live inside Pilot Evidence
+
+H. Setup / Intake / Health
+- Pilot Health
+- Route Setup
+- Upload / import tools
+- Advanced optimization settings
+- These should collapse automatically after proposal generation
+
+Important rule:
+- Once a proposal exists, setup must visually step back.
+- Review should never lose primary status.
+
+========================================
+4. CENTRAL MAP CANVAS DECISIONS
+========================================
+
+The map should remain central across all phases.
+
+Map roles:
+- Show baseline vs optimized route
+- Show selected vehicle route
+- Show traffic context
+- Show blocked corridors
+- Show stop labels and focus state
+- Show active route status clearly
+
+Floating map controls should stay lightweight:
+- Route Layers
+- Route Focus
+- Traffic Overlay
+- Blocked Corridors
+
+Map principles:
+- Controls should not compete with the left decision rail
+- Route state should be understandable at a glance
+- Selected route emphasis must be stronger than every other route
+- Motion should support clarity only
+
+Persistent map strip:
+- Keep a thin bottom map strip with live proposal snapshot
+- It should show:
+  - current proposal headline
+  - active provider / traffic mode
+  - route count or selected route summary
+- It should not become a second dashboard competing with the main decision rail
+
+========================================
+5. SECONDARY EVIDENCE LAYER
+========================================
+
+This area exists to support trust, not distract from action.
+
+Required sections:
+1. Pilot Evidence
+- run count
+- approvals
+- adjustments
+- reroutes
+- fallback rate
+- aggregate distance/time/emissions deltas
+- later: aggregate cost delta if available
+
+2. Routes
+- baseline route cards
+- optimized route cards
+- selected route comparison
+
+3. Diagnostics
+- provider
+- traffic mode
+- routing status
+- cache
+- fallback legs
+- geofence impact
+- processing times
+
+4. Exports
+- Route decision HTML
+- Route decision JSON
+- Vehicle manifests
+- GeoJSON
+
+Rules:
+- Secondary sections should never push the active decision off-screen.
+- Use tabs, segmented controls, or progressive disclosure.
+- Keep the evidence grouped and predictable.
+
+========================================
+6. PRODUCT STATES
+========================================
+
+The UI must be clearly stateful.
+
+State 1 - No Proposal Yet
+- Setup is visible
+- Product explains what will happen after optimization
+- Empty map state stays elegant and inviting
+
+State 2 - Proposal Ready
+- Proposal header appears
+- Why This Route appears immediately
+- Dispatcher actions become primary
+- Setup collapses into background
+
+State 3 - Adjustment Requested / Preview Active
+- Current proposal remains visible
+- Updated proposal is clearly marked as preview
+- Override delta becomes primary
+- Keep Current Proposal and Confirm Adjustment become the two explicit choices
+
+State 4 - Updated Proposal Accepted
+- Previous proposal context remains accessible
+- Change reason and tradeoff remain visible
+- State label clearly says updated proposal
+
+State 5 - Approved
+- Decision state changes to approved
+- Route is visually settled
+- Exports and handoff become more prominent
+
+State 6 - Error / Fallback / Weak Confidence
+- Explanation softens claims
+- Warning treatment becomes more visible
+- User understands what is weaker and why
+
+========================================
+7. COMPARISON MODEL
+========================================
+
+The UI must support three-way reasoning even if implementation starts with one preview path.
+
+Conceptual comparison model:
+1. Current proposal
+2. Dispatcher-intended change
+3. Better negotiated alternative
+
+Short-term implementation:
+- Current proposal + preview proposal + override delta
+
+Long-term UI architecture should reserve space for:
+- Keep current
+- Accept preview
+- Explore alternative option set
+
+This avoids future redesign when multi-option negotiation becomes richer.
+
+========================================
+8. PHASE-BY-PHASE UI EXPANSION
+========================================
+
+PHASE 1 - LOCK THE PRODUCT THESIS INTO THE UI
+UI focus:
+- Proposal-first hierarchy
+- Why This Route above the fold
+- Approve / Request Adjustment attached to explanation
+- Setup and health visually demoted after proposal generation
+- Stronger naming and calmer visual hierarchy
+
+PHASE 2 - COMPLETE THE NEGOTIATION LAYER
+UI focus:
+- Better adjustment preview state
+- Strong override delta surface
+- Dispatcher tags and note flow refined
+- Previous vs updated proposal context clearer
+
+PHASE 3 - STRENGTHEN EXPLANATION QUALITY
+UI focus:
+- Better summary language
+- Confidence-aware warning presentation
+- Clearer evidence grouping by operational logic
+- Better “why changed” language for reroutes and geoblocks
+
+PHASE 4 - REAL ORG DATA READINESS
+UI focus:
+- Intake and import UX hardening
+- Better validation surfaces
+- Cleaner data error messaging
+- Support for realistic field schemas without bloating the review flow
+
+PHASE 5 - PILOT EVIDENCE AND ARTIFACTS
+UI focus:
+- Stronger pilot evidence dashboard
+- Better export framing
+- Clear old vs updated route story
+- Explicit trust-profit proof reporting
+
+PHASE 6 - REASONING-SUPPORTIVE OPERATIONAL CONSTRAINTS
+UI focus:
+- Add constraints only in a way that supports decision explanation
+- Constraint visibility should explain feasibility, not dump enterprise complexity into the main screen
+- New controls must live in setup or contextual review cards, not clutter the negotiation core
+
+========================================
+9. FRIENDLY + PREMIUM VISUAL SYSTEM
+========================================
+
+Tone:
+- Calm, intelligent, slightly cinematic
+- No harsh enterprise heaviness
+- No playful consumer styling
+
+Typography:
+- Strong, legible hierarchy
+- High contrast for proposal state and actions
+- Monospace can remain as a brand accent, not the dominant body reading experience
+
+Spacing:
+- Generous spacing around decision blocks
+- Tighten only in secondary evidence areas
+
+Cards:
+- Proposal and explanation cards should feel like product-grade objects
+- Diagnostics and exports can be denser and more utilitarian
+
+Buttons:
+- Approve should feel confident and stable
+- Request Adjustment should feel thoughtful, not dangerous
+- Confirm Adjustment should feel explicit and informed
+- Keep Current Proposal should feel safe and easy
+
+Color roles:
+- Green: approval / better outcome
+- Violet or accent: negotiation / preview / alternative state
+- Amber: caution / weaker confidence / tradeoff tension
+- Blue: information / downstream explanation / system context
+
+Motion:
+- Use subtle transitions when:
+  - proposal becomes preview
+  - preview becomes approved
+  - selected route changes
+  - evidence panels open or collapse
+- Motion must reinforce understanding, not decorate the screen
+
+========================================
+10. DISPATCHER-FRIENDLY PRINCIPLES
+========================================
+
+The dispatcher should never have to:
+- hunt for the latest proposal
+- wonder what action is expected next
+- read long walls of reasoning before taking action
+- leave the main review area to understand tradeoffs
+- mentally calculate whether a change is worse or better
+
+The dispatcher should always be able to answer quickly:
+- What is the proposal?
+- Why did the system choose it?
+- What happens if I change it?
+- Can I keep the current route instead?
+- Is this change better, worse, or mixed?
+- What evidence do I have if someone asks why we chose this?
+
+========================================
+11. FUTURE-PROOFING RULES
+========================================
+
+When new features arrive in later phases:
+- Never insert them above proposal review unless they are part of the decision itself.
+- Never let setup controls push explanation below the fold.
+- Never let diagnostics visually outrank negotiation.
+- Never add enterprise constraint widgets into the main flow unless they directly affect the active proposal decision.
+- If a new feature does not clearly support explain, negotiate, quantify, or learn, it belongs outside the core screen hierarchy.
+
+========================================
+12. IMMEDIATE UI DECISIONS TO LOCK NOW
+========================================
+
+1. The left rail is a decision workflow, not a generic sidebar.
+2. Why This Route stays above the fold with dispatcher actions.
+3. Pilot Health and Route Setup become clearly secondary once a proposal exists.
+4. The map remains central and visually calm.
+5. Secondary evidence stays grouped under a predictable switcher.
+6. The preview state is visually distinct from the current proposal.
+7. Override delta must always appear before adjustment confirmation.
+8. The UI architecture must preserve space for a future third-option comparison model.
+
+Final UI rule:
+- Every phase may add capability, but no phase is allowed to break the product’s core reading order:
+  proposal -> why -> decision -> tradeoff -> evidence

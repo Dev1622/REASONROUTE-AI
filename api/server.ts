@@ -6,6 +6,8 @@ import { getRoutingConfigStatus, routePathOnRoads } from '../services/roadRoutin
 import {
   AdjustmentRequest,
   AppConfigStatus,
+  CompanyHistoricalMetricsBaseline,
+  CompanyHistoricalRouteOutcome,
   DecisionSummary,
   FleetComparison,
   FleetConfig,
@@ -16,11 +18,25 @@ import {
   OptimizationResult,
   PlanningInputs,
   OverrideDelta,
+  ShadowPilotComparisonSummary,
+  ShadowPilotOverrideAnalysis,
+  ShadowPilotProofReport,
+  ShadowPilotRunRecord,
   ProposalSnapshot,
   RouteDiagnostics,
   RouteSummary,
   RoutedRoad,
+  ShadowPilotScenarioInput,
 } from '../types';
+import {
+  createShadowPilotScenario,
+  getShadowPilotAggregate,
+  getShadowPilotRun,
+  getShadowPilotScenario,
+  listShadowPilotRuns,
+  listShadowPilotScenarios,
+  saveShadowPilotRun,
+} from '../services/shadowPilotStore';
 
 type ImagePayload = { base64: string; mimeType: string };
 
@@ -316,6 +332,186 @@ function buildImprovement(baseline: Metrics, optimized: Metrics) {
     timePct: pct(baseline.time, optimized.time),
     emissionsPct: pct(baseline.emissions, optimized.emissions),
   };
+}
+
+function metricDirection(delta: number | null): 'better' | 'worse' | 'flat' | 'unknown' {
+  if (delta === null || Number.isNaN(delta)) return 'unknown';
+  if (Math.abs(delta) < 0.001) return 'flat';
+  return delta > 0 ? 'better' : 'worse';
+}
+
+function buildProofMetricDelta(
+  baselineValue: number | undefined,
+  proposalValue: number | undefined,
+  largerIsBetter = false
+): ShadowPilotComparisonSummary['distance'] {
+  if (!Number.isFinite(baselineValue) || !Number.isFinite(proposalValue)) {
+    return {
+      baselineValue: Number.isFinite(baselineValue) ? Number(baselineValue) : null,
+      proposalValue: Number.isFinite(proposalValue) ? Number(proposalValue) : null,
+      delta: null,
+      deltaPct: null,
+      direction: 'unknown',
+    };
+  }
+  const rawDelta = largerIsBetter ? Number(proposalValue) - Number(baselineValue) : Number(baselineValue) - Number(proposalValue);
+  return {
+    baselineValue: Number(baselineValue),
+    proposalValue: Number(proposalValue),
+    delta: +rawDelta.toFixed(3),
+    deltaPct: baselineValue ? +((rawDelta / baselineValue) * 100).toFixed(1) : null,
+    direction: metricDirection(rawDelta),
+  };
+}
+
+function buildHistoricalComparison(
+  baselineSource: 'system' | 'organization',
+  baseline: Partial<Metrics> & { fuelCost?: number },
+  proposal: Metrics
+): ShadowPilotComparisonSummary {
+  const distance = buildProofMetricDelta(baseline.distance, proposal.distance);
+  const time = buildProofMetricDelta(baseline.time, proposal.time);
+  const emissions = buildProofMetricDelta(baseline.emissions, proposal.emissions);
+  const fuelCost = buildProofMetricDelta(baseline.fuelCost, proposal.distance * 0.72);
+  const positiveCount = [distance, time, emissions].filter(metric => metric.direction === 'better').length;
+  const mixed = [distance, time, emissions].some(metric => metric.direction === 'worse') && positiveCount > 0;
+  const headline =
+    positiveCount === 3
+      ? baselineSource === 'organization'
+        ? 'ReasonRoute outperformed the historical company outcome'
+        : 'Proposed route outperformed the internal baseline'
+      : mixed
+        ? 'Tradeoffs need dispatcher review'
+        : positiveCount === 0
+          ? 'Historical outcome remains stronger'
+          : 'Proposal improved selected routing metrics';
+  const detail = `Distance ${distance.deltaPct ?? 'n/a'}%, time ${time.deltaPct ?? 'n/a'}%, emissions ${emissions.deltaPct ?? 'n/a'}% against the ${baselineSource} baseline.`;
+  return {
+    baselineSource,
+    headline,
+    detail,
+    distance,
+    time,
+    emissions,
+    fuelCost: fuelCost.direction === 'unknown' ? undefined : fuelCost,
+  };
+}
+
+function buildOverrideAnalysis(
+  result: OptimizationResult,
+  internalComparison: ShadowPilotComparisonSummary,
+  organizationComparison?: ShadowPilotComparisonSummary
+): ShadowPilotOverrideAnalysis {
+  const organizationBetter = organizationComparison?.time.direction === 'worse' || organizationComparison?.distance.direction === 'worse';
+  const internalStrong = internalComparison.time.direction === 'better' && internalComparison.distance.direction !== 'worse';
+  const overrideDirection = result.overrideDelta?.direction;
+
+  if (organizationBetter && overrideDirection === 'worse') {
+    return {
+      classification: 'dispatcher_correct',
+      headline: 'Historical dispatcher action appears operationally justified',
+      detail: 'The historical outcome protected at least one key routing metric better than the current proposal, so dispatcher context likely added value.',
+      avoidableOverride: false,
+      estimatedLeakage: Math.max(0, -(organizationComparison?.fuelCost?.delta ?? 0)),
+    };
+  }
+
+  if (!organizationBetter && internalStrong && overrideDirection !== 'better') {
+    return {
+      classification: 'system_correct',
+      headline: 'The proposed route appears to be the better decision',
+      detail: 'The current proposal holds up against both the internal baseline and the historical outcome, suggesting the override or prior execution was avoidable.',
+      avoidableOverride: true,
+      savedIfAccepted: Math.max(0, organizationComparison?.fuelCost?.delta ?? internalComparison.fuelCost?.delta ?? 0),
+    };
+  }
+
+  if (overrideDirection === 'mixed' || result.decisionStatus === 'updated_proposal') {
+    return {
+      classification: 'third_alternative_exists',
+      headline: 'A negotiated third alternative likely exists',
+      detail: 'The data suggests neither the historical execution nor the initial proposal is clearly dominant across all metrics, which is exactly where ReasonRoute should surface an informed compromise.',
+      avoidableOverride: false,
+      estimatedLeakage: Math.max(0, -(organizationComparison?.fuelCost?.delta ?? 0)),
+    };
+  }
+
+  return {
+    classification: 'insufficient_evidence',
+    headline: 'More field evidence is needed for a confident decision verdict',
+    detail: 'This replay still produces routing and savings evidence, but it does not yet conclusively prove whether the system or dispatcher was right.',
+    avoidableOverride: false,
+  };
+}
+
+function buildProofReport(result: OptimizationResult): ShadowPilotProofReport {
+  const internalBaselineComparison = buildHistoricalComparison('system', result.metrics.baseline, result.metrics.optimized);
+  const organizationComparison = result.historicalBaseline
+    ? buildHistoricalComparison('organization', result.historicalBaseline, result.metrics.optimized)
+    : undefined;
+  const overrideAnalysis = buildOverrideAnalysis(result, internalBaselineComparison, organizationComparison);
+  const confidenceNotes = [
+    result.diagnostics?.routingStatus === 'full_osrm'
+      ? 'Road-level routing completed without fallback.'
+      : 'Some route legs relied on fallback routing, so ETA confidence is directional.',
+    result.historicalBaseline
+      ? 'Historical company baseline was supplied for this replay.'
+      : 'No company historical baseline was supplied, so proof is limited to the internal baseline.',
+  ];
+  const highlights = [
+    organizationComparison?.headline ?? internalBaselineComparison.headline,
+    overrideAnalysis.headline,
+    result.decisionSummary?.summary ?? result.comparison?.detail ?? 'Proposal replay complete.',
+  ].filter(Boolean);
+
+  return {
+    reportId: crypto.randomUUID(),
+    generatedAt: new Date().toISOString(),
+    scenarioId: result.scenarioId,
+    organizationName: result.organizationName,
+    scenarioLabel: result.scenarioLabel,
+    routeDate: result.routeDate,
+    shiftLabel: result.shiftLabel,
+    internalBaselineComparison,
+    organizationComparison,
+    overrideAnalysis,
+    highlights,
+    confidenceNotes,
+  };
+}
+
+function validateHistoricalBaseline(baseline?: CompanyHistoricalMetricsBaseline, routes?: CompanyHistoricalRouteOutcome[]) {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  if (!baseline && !routes?.length) {
+    return { errors, warnings };
+  }
+
+  if (baseline) {
+    for (const [label, value] of Object.entries({
+      distance: baseline.distance,
+      time: baseline.time,
+      emissions: baseline.emissions,
+      fuelCost: baseline.fuelCost,
+    })) {
+      if (value !== undefined && (!Number.isFinite(value) || Number(value) < 0)) {
+        errors.push(`Historical baseline ${label} must be a non-negative number.`);
+      }
+    }
+  }
+
+  if (routes?.length) {
+    routes.forEach((route, index) => {
+      if (!route.vehicleLabel?.trim()) {
+        errors.push(`Historical route ${index + 1} is missing a vehicle label.`);
+      }
+      if (!route.stopLabels?.length && !route.stopIds?.length) {
+        warnings.push(`Historical route ${index + 1} does not include stop order data, so comparison stays metrics-level.`);
+      }
+    });
+  }
+
+  return { errors, warnings };
 }
 
 function computeRoadEmissions(distanceKm: number, durationMin: number): number {
@@ -661,6 +857,59 @@ async function applyRoadRouting(
   });
 }
 
+async function executeScenarioReplay(
+  scenario: ShadowPilotScenarioInput & { id?: string },
+  geofences: Geofence[] = []
+): Promise<OptimizationResult> {
+  const validation = validateStopsText(scenario.stopsText);
+  if (validation.errors.length > 0) {
+    throw new Error(validation.errors.join(' '));
+  }
+  const baselineValidation = validateHistoricalBaseline(scenario.historicalBaseline, scenario.historicalRoutes);
+  if (baselineValidation.errors.length > 0) {
+    throw new Error(baselineValidation.errors.join(' '));
+  }
+
+  const baseResult = await optimizeRoute(
+    scenario.stopsText,
+    [],
+    scenario.preferences,
+    scenario.optimization,
+    scenario.fleet
+  );
+  const routed = await applyRoadRouting(
+    {
+      ...(baseResult as unknown as OptimizationResult),
+      planningInputs: {
+        stopsText: scenario.stopsText,
+        preferences: scenario.preferences,
+        optimization: scenario.optimization,
+        fleet: scenario.fleet,
+      },
+      validation: {
+        errors: [],
+        warnings: [...(baseResult.validation?.warnings ?? []), ...validation.warnings, ...baselineValidation.warnings],
+      },
+      scenarioId: scenario.id,
+      organizationName: scenario.organizationName,
+      scenarioLabel: scenario.scenarioLabel,
+      routeDate: scenario.routeDate,
+      shiftLabel: scenario.shiftLabel,
+      historicalBaseline: scenario.historicalBaseline,
+      historicalRoutes: scenario.historicalRoutes,
+    },
+    geofences
+  );
+  const proofReport = buildProofReport(routed);
+  return {
+    ...routed,
+    internalBaselineComparison: proofReport.internalBaselineComparison,
+    organizationComparison: proofReport.organizationComparison,
+    overrideAnalysis: proofReport.overrideAnalysis,
+    proofReport,
+  };
+}
+
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', uptime: process.uptime() });
 });
@@ -697,9 +946,174 @@ app.get(['/config', '/api/config'], (_req, res) => {
   res.json(payload);
 });
 
+app.get('/api/shadow-pilot/scenarios', async (_req, res) => {
+  try {
+    const scenarios = await listShadowPilotScenarios();
+    res.json({ ok: true, scenarios });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? 'Failed to list scenarios.' });
+  }
+});
+
+app.get('/api/shadow-pilot/scenarios/:id', async (req, res) => {
+  try {
+    const scenario = await getShadowPilotScenario(req.params.id);
+    if (!scenario) {
+      return res.status(404).json({ error: 'Scenario not found.' });
+    }
+    res.json({ ok: true, scenario });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? 'Failed to read scenario.' });
+  }
+});
+
+app.post('/api/shadow-pilot/scenarios/import', async (req, res) => {
+  try {
+    const {
+      organizationName,
+      scenarioLabel,
+      routeDate,
+      shiftLabel,
+      stopsText,
+      stops,
+      fleet,
+      preferences,
+      optimization,
+      historicalBaseline,
+      historicalRoutes,
+    } = req.body ?? {};
+
+    const normalizedStops =
+      typeof stopsText === 'string' && stopsText.trim()
+        ? stopsText
+        : Array.isArray(stops)
+          ? toStopsText(stops)
+          : '';
+
+    if (!organizationName?.trim() || !scenarioLabel?.trim()) {
+      return res.status(400).json({ error: 'organizationName and scenarioLabel are required.' });
+    }
+    if (!normalizedStops.trim()) {
+      return res.status(400).json({ error: 'stopsText or stops array is required.' });
+    }
+
+    const validation = validateStopsText(normalizedStops);
+    const baselineValidation = validateHistoricalBaseline(historicalBaseline, historicalRoutes);
+    if (validation.errors.length > 0 || baselineValidation.errors.length > 0) {
+      return res.status(400).json({
+        error: [...validation.errors, ...baselineValidation.errors].join(' '),
+        validation: {
+          errors: [...validation.errors, ...baselineValidation.errors],
+          warnings: [...validation.warnings, ...baselineValidation.warnings],
+        },
+      });
+    }
+
+    const scenario = await createShadowPilotScenario({
+      organizationName: organizationName.trim(),
+      scenarioLabel: scenarioLabel.trim(),
+      routeDate: typeof routeDate === 'string' ? routeDate : undefined,
+      shiftLabel: typeof shiftLabel === 'string' ? shiftLabel : undefined,
+      stopsText: normalizedStops,
+      fleet: fleet as FleetConfig | undefined,
+      preferences,
+      optimization,
+      historicalBaseline: historicalBaseline as CompanyHistoricalMetricsBaseline | undefined,
+      historicalRoutes: Array.isArray(historicalRoutes) ? (historicalRoutes as CompanyHistoricalRouteOutcome[]) : undefined,
+    });
+
+    res.json({
+      ok: true,
+      scenario,
+      validation: {
+        errors: [],
+        warnings: [...validation.warnings, ...baselineValidation.warnings],
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? 'Failed to import scenario.' });
+  }
+});
+
+app.post('/api/shadow-pilot/scenarios/:id/replay', async (req, res) => {
+  try {
+    const scenario = await getShadowPilotScenario(req.params.id);
+    if (!scenario) {
+      return res.status(404).json({ error: 'Scenario not found.' });
+    }
+    const geofences = Array.isArray(req.body?.geofences) ? (req.body.geofences as Geofence[]) : [];
+    const replayed = await executeScenarioReplay(scenario, geofences);
+    const run: ShadowPilotRunRecord = {
+      id: crypto.randomUUID(),
+      scenarioId: scenario.id,
+      createdAt: new Date().toISOString(),
+      organizationName: scenario.organizationName,
+      scenarioLabel: scenario.scenarioLabel,
+      routeDate: scenario.routeDate,
+      shiftLabel: scenario.shiftLabel,
+      result: replayed,
+      report: {
+        ...(replayed.proofReport as ShadowPilotProofReport),
+        runId: undefined,
+      },
+    };
+    run.report.runId = run.id;
+    replayed.proofReport = run.report;
+    await saveShadowPilotRun(run);
+    res.json({ ok: true, run, result: replayed, report: run.report });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? 'Failed to replay scenario.' });
+  }
+});
+
+app.get('/api/shadow-pilot/runs', async (_req, res) => {
+  try {
+    const runs = await listShadowPilotRuns();
+    res.json({ ok: true, runs });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? 'Failed to list runs.' });
+  }
+});
+
+app.get('/api/shadow-pilot/runs/:id', async (req, res) => {
+  try {
+    const run = await getShadowPilotRun(req.params.id);
+    if (!run) {
+      return res.status(404).json({ error: 'Run not found.' });
+    }
+    res.json({ ok: true, run, result: run.result, report: run.report });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? 'Failed to read run.' });
+  }
+});
+
+app.get('/api/shadow-pilot/aggregate', async (_req, res) => {
+  try {
+    const aggregate = await getShadowPilotAggregate();
+    res.json({ ok: true, aggregate });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? 'Failed to build aggregate.' });
+  }
+});
+
 app.post(['/optimize', '/api/optimize'], async (req, res) => {
   try {
-    const { stopsText, stops, images, preferences, optimization, geofences, fleet } = req.body ?? {};
+    const {
+      stopsText,
+      stops,
+      images,
+      preferences,
+      optimization,
+      geofences,
+      fleet,
+      scenarioId,
+      organizationName,
+      scenarioLabel,
+      routeDate,
+      shiftLabel,
+      historicalBaseline,
+      historicalRoutes,
+    } = req.body ?? {};
 
     let stopsInput: string | undefined = typeof stopsText === 'string' && stopsText.trim() ? stopsText : undefined;
     if (!stopsInput && Array.isArray(stops)) {
@@ -710,8 +1124,12 @@ app.post(['/optimize', '/api/optimize'], async (req, res) => {
       return res.status(400).json({ error: 'stopsText or stops array is required' });
     }
     const validation = validateStopsText(stopsInput);
+    const baselineValidation = validateHistoricalBaseline(historicalBaseline, historicalRoutes);
     if (validation.errors.length > 0) {
       return res.status(400).json({ error: validation.errors.join(' '), validation });
+    }
+    if (baselineValidation.errors.length > 0) {
+      return res.status(400).json({ error: baselineValidation.errors.join(' '), validation: baselineValidation });
     }
 
     const contextImages: ImagePayload[] = Array.isArray(images)
@@ -732,11 +1150,23 @@ app.post(['/optimize', '/api/optimize'], async (req, res) => {
         ...(baseResult as unknown as OptimizationResult),
         validation: {
           errors: [],
-          warnings: [...(baseResult.validation?.warnings ?? []), ...validation.warnings],
+          warnings: [...(baseResult.validation?.warnings ?? []), ...validation.warnings, ...baselineValidation.warnings],
         },
+        scenarioId: typeof scenarioId === 'string' ? scenarioId : undefined,
+        organizationName: typeof organizationName === 'string' ? organizationName : undefined,
+        scenarioLabel: typeof scenarioLabel === 'string' ? scenarioLabel : undefined,
+        routeDate: typeof routeDate === 'string' ? routeDate : undefined,
+        shiftLabel: typeof shiftLabel === 'string' ? shiftLabel : undefined,
+        historicalBaseline: historicalBaseline as CompanyHistoricalMetricsBaseline | undefined,
+        historicalRoutes: Array.isArray(historicalRoutes) ? (historicalRoutes as CompanyHistoricalRouteOutcome[]) : undefined,
       },
       Array.isArray(geofences) ? geofences : []
     );
+    const proofReport = buildProofReport(result);
+    result.internalBaselineComparison = proofReport.internalBaselineComparison;
+    result.organizationComparison = proofReport.organizationComparison;
+    result.overrideAnalysis = proofReport.overrideAnalysis;
+    result.proofReport = proofReport;
 
     res.json({
       ok: true,
@@ -788,6 +1218,13 @@ app.post(['/reroute', '/api/reroute'], async (req, res) => {
         {
           ...(nextBaseResult as unknown as OptimizationResult),
           planningInputs: adjustedInputs,
+          scenarioId: result.scenarioId,
+          scenarioLabel: result.scenarioLabel,
+          organizationName: result.organizationName,
+          routeDate: result.routeDate,
+          shiftLabel: result.shiftLabel,
+          historicalBaseline: result.historicalBaseline,
+          historicalRoutes: result.historicalRoutes,
         },
         nextGeofences,
         adjustmentRequest as AdjustmentRequest,
@@ -801,6 +1238,12 @@ app.post(['/reroute', '/api/reroute'], async (req, res) => {
         previousProposal
       );
     }
+
+    const proofReport = buildProofReport(rerouted);
+    rerouted.internalBaselineComparison = proofReport.internalBaselineComparison;
+    rerouted.organizationComparison = proofReport.organizationComparison;
+    rerouted.overrideAnalysis = proofReport.overrideAnalysis;
+    rerouted.proofReport = proofReport;
 
     res.json({
       ok: true,

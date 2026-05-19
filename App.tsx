@@ -2,8 +2,32 @@ import React, { useEffect, useState } from 'react';
 import Sidebar from './components/Sidebar';
 import MapVisualization from './components/MapVisualization';
 import MetricsDashboard from './components/MetricsDashboard';
-import { fetchConfigStatus, optimizeViaApi, rerouteViaApi } from './services/apiClient';
-import { AdjustmentRequest, AppConfigStatus, DisplayFilters, FleetConfig, Geofence, OptimizationResult, PilotReportSnapshot, ProcessingStatus, RouteFocus } from './types';
+import {
+  fetchConfigStatus,
+  fetchShadowPilotAggregate,
+  getShadowPilotScenario,
+  importShadowPilotScenario,
+  listShadowPilotScenarios,
+  optimizeViaApi,
+  replayShadowPilotScenario,
+  rerouteViaApi,
+} from './services/apiClient';
+import {
+  AdjustmentRequest,
+  AppConfigStatus,
+  CompanyHistoricalMetricsBaseline,
+  CompanyHistoricalRouteOutcome,
+  DisplayFilters,
+  FleetConfig,
+  Geofence,
+  OptimizationResult,
+  PilotReportSnapshot,
+  ProcessingStatus,
+  RouteFocus,
+  ShadowPilotAggregateSnapshot,
+  ShadowPilotScenarioRecord,
+  ShadowPilotScenarioSummary,
+} from './types';
 
 const App: React.FC = () => {
   const [status, setStatus] = useState<ProcessingStatus>(ProcessingStatus.IDLE);
@@ -27,9 +51,14 @@ const App: React.FC = () => {
   const [metricsCollapsed, setMetricsCollapsed] = useState(false);
   const [approvalCount, setApprovalCount] = useState(0);
   const [rerouteCount, setRerouteCount] = useState(0);
+  const [scenarios, setScenarios] = useState<ShadowPilotScenarioSummary[]>([]);
+  const [pilotAggregate, setPilotAggregate] = useState<ShadowPilotAggregateSnapshot | null>(null);
+  const [activeScenario, setActiveScenario] = useState<ShadowPilotScenarioRecord | null>(null);
 
   useEffect(() => {
     fetchConfigStatus().then(setConfigStatus).catch(() => setConfigStatus(null));
+    listShadowPilotScenarios().then(setScenarios).catch(() => setScenarios([]));
+    fetchShadowPilotAggregate().then(setPilotAggregate).catch(() => setPilotAggregate(null));
   }, []);
 
   useEffect(() => {
@@ -123,7 +152,16 @@ const App: React.FC = () => {
     images: File[],
     preferences?: { weightTime?: number; weightEmissions?: number; weightDistance?: number },
     optimization?: { mode?: 'fast' | 'quality'; timeBudgetMs?: number; baselineMode?: 'dynamic' | 'distance' },
-    fleet?: FleetConfig
+    fleet?: FleetConfig,
+    scenarioMeta?: {
+      scenarioId?: string;
+      organizationName?: string;
+      scenarioLabel?: string;
+      routeDate?: string;
+      shiftLabel?: string;
+      historicalBaseline?: CompanyHistoricalMetricsBaseline;
+      historicalRoutes?: CompanyHistoricalRouteOutcome[];
+    }
   ) => {
     setStatus(ProcessingStatus.ANALYZING);
     setErrorMessage(null);
@@ -138,6 +176,7 @@ const App: React.FC = () => {
         preferences,
         optimization,
         fleet,
+        ...scenarioMeta,
       });
       applyResult(apiResult);
     } catch (error: any) {
@@ -202,6 +241,58 @@ const App: React.FC = () => {
     }
   };
 
+  const refreshShadowPilotCollections = async () => {
+    const [nextScenarios, nextAggregate] = await Promise.all([
+      listShadowPilotScenarios().catch(() => []),
+      fetchShadowPilotAggregate().catch(() => null),
+    ]);
+    setScenarios(nextScenarios);
+    setPilotAggregate(nextAggregate);
+  };
+
+  const handleSaveScenario = async (payload: {
+    organizationName: string;
+    scenarioLabel: string;
+    routeDate?: string;
+    shiftLabel?: string;
+    stopsText: string;
+    fleet?: FleetConfig;
+    preferences?: { weightTime?: number; weightEmissions?: number; weightDistance?: number };
+    optimization?: { mode?: 'fast' | 'quality'; timeBudgetMs?: number; baselineMode?: 'dynamic' | 'distance' };
+    historicalBaseline?: CompanyHistoricalMetricsBaseline;
+    historicalRoutes?: CompanyHistoricalRouteOutcome[];
+  }) => {
+    setStatus(ProcessingStatus.ANALYZING);
+    setErrorMessage(null);
+    try {
+      const scenario = await importShadowPilotScenario(payload);
+      setActiveScenario(scenario);
+      await refreshShadowPilotCollections();
+      setStatus(ProcessingStatus.COMPLETE);
+    } catch (error: any) {
+      setErrorMessage(error?.message ?? 'Scenario import failed.');
+      setStatus(ProcessingStatus.ERROR);
+    }
+  };
+
+  const handleReplayScenario = async (scenarioId: string) => {
+    setStatus(ProcessingStatus.OPTIMIZING);
+    setErrorMessage(null);
+    setPreviewResult(null);
+    try {
+      const [scenario, replayed] = await Promise.all([
+        getShadowPilotScenario(scenarioId),
+        replayShadowPilotScenario(scenarioId),
+      ]);
+      setActiveScenario(scenario);
+      applyResult(replayed.result);
+      await refreshShadowPilotCollections();
+    } catch (error: any) {
+      setErrorMessage(error?.message ?? 'Scenario replay failed.');
+      setStatus(ProcessingStatus.ERROR);
+    }
+  };
+
   const handleConfirmPreview = () => {
     if (!previewResult) return;
     setRerouteCount(prev => prev + 1);
@@ -244,6 +335,8 @@ const App: React.FC = () => {
       <div className="w-[380px] lg:w-[32%] min-w-[320px] flex-shrink-0 z-10 shadow-2xl">
         <Sidebar
           onOptimize={handleOptimization}
+          onSaveScenario={handleSaveScenario}
+          onReplayScenario={handleReplayScenario}
           onApprove={handleApprove}
           onPreviewAdjustment={handlePreviewAdjustment}
           onConfirmAdjustment={handleConfirmPreview}
@@ -255,6 +348,9 @@ const App: React.FC = () => {
           history={history}
           errorMessage={errorMessage}
           configStatus={configStatus}
+          scenarios={scenarios}
+          pilotAggregate={pilotAggregate}
+          activeScenario={activeScenario}
         />
       </div>
 

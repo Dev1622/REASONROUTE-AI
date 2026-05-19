@@ -1,0 +1,255 @@
+ORGANIZATION READY SHADOW PILOT REQUIREMENTS
+
+Purpose:
+- Define the final conditions ReasonRoute must satisfy before it can be presented as organization-ready for a true shadow pilot.
+- Convert product thesis, workflow, data, UI, proof, and operational expectations into a clear readiness gate.
+
+Core definition:
+- An organization-ready shadow pilot means ReasonRoute can take real historical organizational routing data, process it credibly, generate usable routing proposals and decision evidence, compare against real past outcomes, and produce proof artifacts the organization can review safely without changing live operations.
+
+========================================
+1. PRODUCT REQUIREMENTS
+========================================
+
+ReasonRoute must function as:
+1. A real routing and fleet-planning product
+2. A dispatcher review and negotiation console
+3. A Glass Box explanation and tradeoff system
+4. A pilot evidence and proof generation system
+
+The product must support:
+- route generation from real stop/fleet inputs
+- baseline comparison
+- proposal review
+- approval flow
+- adjustment request flow
+- adjustment preview / confirmation flow
+- route rerouting where required
+- exportable evidence artifacts
+
+The product must not depend on the organization allowing a thin integration-only workflow.
+- It must be able to run the pilot from within ReasonRoute itself.
+
+========================================
+2. DATA READINESS REQUIREMENTS
+========================================
+
+The system must accept realistic organizational historical data inputs.
+
+Minimum required:
+- stop labels
+- depot / origin row
+- coordinates when available
+- fleet count or route count context
+- route-level or day-level metrics if available
+
+Preferred historical comparison inputs:
+- actual route assignments by vehicle
+- actual stop sequence
+- actual total distance
+- actual total route time
+- actual vehicles used
+- actual fuel / emissions / cost if available
+
+Import handling must include:
+- CSV support
+- XLSX support
+- JSON support
+- validation for missing or malformed rows
+- duplicate handling
+- clear error UX
+- no silent failures
+
+Planning context must survive through:
+- optimize
+- reroute
+- export
+- comparison artifacts
+
+========================================
+3. ROUTING CREDIBILITY REQUIREMENTS
+========================================
+
+The system must produce routing outputs that are operationally credible enough for pilot review.
+
+Required:
+- route proposals for real organizational workloads
+- route metrics per fleet and per vehicle where applicable
+- road-snapped routing for geographic mode
+- provider visibility
+- fallback visibility
+- route warnings when confidence is weaker
+
+Important rule:
+- The pilot may use real routing and real traffic-aware providers, but must not overstate claims when fallback or weaker confidence is present.
+
+========================================
+4. DECISION WORKFLOW REQUIREMENTS
+========================================
+
+The dispatcher-facing workflow must support:
+- proposal state
+- approve route
+- request adjustment
+- adjustment preview
+- confirm adjustment
+- keep current proposal
+- updated proposal state
+- approved state
+
+The decision workflow must visibly show:
+- current proposal
+- why the route was chosen
+- what happens if the route is changed
+- the cost/tradeoff of the change
+- why the change was requested
+
+The product must support the real decision gap:
+- keep the current route
+- accept a manual change or requested adjustment
+- evaluate whether a better negotiated alternative exists
+
+========================================
+5. EXPLANATION REQUIREMENTS
+========================================
+
+The product must provide plain-language explanation that helps real users review decisions.
+
+Required explanation qualities:
+- short proposal summary
+- clear reason evidence
+- operationally understandable language
+- fallback-aware wording
+- reroute and blocked-corridor explanation when applicable
+- driver-facing downstream explanation where useful
+
+The explanation must not feel like raw debug output by default.
+
+========================================
+6. COST / TRADEOFF REQUIREMENTS
+========================================
+
+The product must show explicit tradeoff visibility during adjustment and reroute review.
+
+Required deltas:
+- time delta
+- distance delta
+- emissions delta
+- estimated cost or fuel impact where available
+
+The system must help answer:
+- what did the change cost?
+- what should have been saved?
+- how much loss happened because of the override or alternate decision?
+
+========================================
+7. COMPARISON / BASELINE REQUIREMENTS
+========================================
+
+The pilot must support both:
+1. internal system baseline
+2. organization historical baseline
+
+The product should compare:
+- ReasonRoute system baseline
+- ReasonRoute proposed result
+- organization actual historical result
+
+This is necessary because:
+- internal baseline gives consistent product-level comparison
+- organization historical baseline gives external credibility and buyer trust
+
+The product should not rely only on comparing its optimized route against its own internal baseline.
+
+========================================
+8. PILOT PROOF REQUIREMENTS
+========================================
+
+The pilot must prove more than route efficiency.
+
+It should prove:
+- how many overrides happened historically
+- which overrides were operationally necessary
+- which overrides should have been avoided
+- when the original system was already correct
+- when the dispatcher was correct
+- whether the override chosen was truly the best alternative
+- whether another better alternative existed
+- how the override happened
+- what the override cost
+- how much should have been saved
+- how much margin leakage occurred
+
+Owner-facing evidence should include:
+- historical outcome vs ReasonRoute proposal
+- savings or leakage framing
+- decision-quality analysis
+- explanation-backed route comparisons
+- pilot summary artifacts
+
+========================================
+9. UI REQUIREMENTS
+========================================
+
+The UI must satisfy the end-to-end UI decision plan.
+
+Key required behavior:
+- before optimization, it feels like a capable routing product
+- after optimization, it shifts into decision-first review mode
+- the map stays central
+- the left rail acts as the decision workflow
+- Why This Route stays above the fold with dispatcher actions
+- setup, health, and secondary evidence do not overwhelm the review flow
+- the product feels premium, smooth, calm, and dispatcher-friendly
+
+========================================
+10. EXPORT / ARTIFACT REQUIREMENTS
+========================================
+
+The pilot must produce shareable outputs.
+
+Required exports:
+- route decision HTML
+- route decision JSON
+- vehicle manifest(s)
+- route geometry / GeoJSON
+- pilot evidence summary
+
+Artifacts should contain where possible:
+- decision state
+- proposal summary
+- adjustment reason
+- driver-facing explanation
+- diagnostics
+- route metrics
+- comparison context
+
+========================================
+11. OPERATIONAL SAFETY REQUIREMENTS
+========================================
+
+The pilot must be safe to run as a shadow exercise.
+
+Required:
+- no live operational dependency
+- no hidden mutation of the organization’s live systems
+- reproducible runs for a given historical dataset
+- visible warnings and visible limitations
+- stable enough behavior for repeated scenario playback
+
+========================================
+12. FINAL GO / NO-GO GATE
+========================================
+
+ReasonRoute is organization-ready for shadow pilot only if all of these are true:
+- Real organizational historical data can be imported without confusing failure.
+- The system can generate credible route proposals and route metrics.
+- The proposal can be reviewed with plain-language explanation.
+- Adjustment flow and cost delta are visible and usable.
+- Historical organizational outcome can be compared against ReasonRoute output.
+- Pilot artifacts clearly communicate route, decision, tradeoff, and evidence.
+- The UI feels like a real routing product and a trustworthy decision console.
+- The pilot can prove not just route efficiency, but override behavior and margin leakage insight.
+
+Best one-line summary:
+- An organization-ready ReasonRoute shadow pilot must be able to replay real routing history, generate credible routing proposals, analyze override behavior, quantify tradeoffs, and produce clear proof of decision-quality improvement.

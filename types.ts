@@ -211,6 +211,129 @@ export interface PilotReportSnapshot {
   emissionsDeltaKg: number;
 }
 
+export interface CompanyHistoricalMetricsBaseline extends Partial<Metrics> {
+  vehicleCount?: number;
+  fuelCost?: number;
+  routeCount?: number;
+  stopCount?: number;
+  routeDate?: string;
+  shiftLabel?: string;
+  notes?: string;
+}
+
+export interface CompanyHistoricalRouteOutcome {
+  routeId: string;
+  vehicleLabel: string;
+  stopLabels?: string[];
+  stopIds?: string[];
+  metrics?: Partial<Metrics>;
+  notes?: string;
+}
+
+export interface ShadowPilotScenarioInput {
+  organizationName: string;
+  scenarioLabel: string;
+  routeDate?: string;
+  shiftLabel?: string;
+  stopsText: string;
+  fleet?: FleetConfig;
+  preferences?: PlanningInputs['preferences'];
+  optimization?: PlanningInputs['optimization'];
+  historicalBaseline?: CompanyHistoricalMetricsBaseline;
+  historicalRoutes?: CompanyHistoricalRouteOutcome[];
+}
+
+export interface ShadowPilotScenarioRecord extends ShadowPilotScenarioInput {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  lastRunId?: string;
+  runIds: string[];
+}
+
+export interface ProofMetricDelta {
+  baselineValue: number | null;
+  proposalValue: number | null;
+  delta: number | null;
+  deltaPct?: number | null;
+  direction: 'better' | 'worse' | 'flat' | 'unknown';
+}
+
+export interface ShadowPilotComparisonSummary {
+  baselineSource: 'system' | 'organization';
+  headline: string;
+  detail: string;
+  distance: ProofMetricDelta;
+  time: ProofMetricDelta;
+  emissions: ProofMetricDelta;
+  fuelCost?: ProofMetricDelta;
+}
+
+export interface ShadowPilotOverrideAnalysis {
+  classification: 'system_correct' | 'dispatcher_correct' | 'third_alternative_exists' | 'insufficient_evidence';
+  headline: string;
+  detail: string;
+  avoidableOverride: boolean;
+  estimatedLeakage?: number;
+  savedIfAccepted?: number;
+}
+
+export interface ShadowPilotProofReport {
+  reportId: string;
+  generatedAt: string;
+  scenarioId?: string;
+  runId?: string;
+  organizationName?: string;
+  scenarioLabel?: string;
+  routeDate?: string;
+  shiftLabel?: string;
+  internalBaselineComparison: ShadowPilotComparisonSummary;
+  organizationComparison?: ShadowPilotComparisonSummary;
+  overrideAnalysis: ShadowPilotOverrideAnalysis;
+  highlights: string[];
+  confidenceNotes: string[];
+}
+
+export interface ShadowPilotRunRecord {
+  id: string;
+  scenarioId?: string;
+  createdAt: string;
+  organizationName?: string;
+  scenarioLabel?: string;
+  routeDate?: string;
+  shiftLabel?: string;
+  result: OptimizationResult;
+  report: ShadowPilotProofReport;
+}
+
+export interface ShadowPilotAggregateSnapshot {
+  scenarioCount: number;
+  runCount: number;
+  organizationCount: number;
+  latestRunAt?: string;
+  historicalComparisonCount: number;
+  systemCorrectCount: number;
+  dispatcherCorrectCount: number;
+  thirdAlternativeCount: number;
+  cumulativeDistanceSavedKm: number;
+  cumulativeTimeSavedMin: number;
+  cumulativeEmissionsSavedKg: number;
+  cumulativeHistoricalFuelSavings?: number;
+}
+
+export interface ShadowPilotScenarioSummary {
+  id: string;
+  organizationName: string;
+  scenarioLabel: string;
+  routeDate?: string;
+  shiftLabel?: string;
+  createdAt: string;
+  updatedAt: string;
+  runCount: number;
+  lastRunAt?: string;
+  lastRunId?: string;
+}
+
 export interface OptimizationResult {
   nodes: Node[];
   baselinePath: string[]; // Array of Node IDs
@@ -240,6 +363,17 @@ export interface OptimizationResult {
   adjustmentRequest?: AdjustmentRequest;
   previousProposal?: ProposalSnapshot;
   planningInputs?: PlanningInputs;
+  scenarioId?: string;
+  scenarioLabel?: string;
+  organizationName?: string;
+  routeDate?: string;
+  shiftLabel?: string;
+  historicalBaseline?: CompanyHistoricalMetricsBaseline;
+  historicalRoutes?: CompanyHistoricalRouteOutcome[];
+  internalBaselineComparison?: ShadowPilotComparisonSummary;
+  organizationComparison?: ShadowPilotComparisonSummary;
+  overrideAnalysis?: ShadowPilotOverrideAnalysis;
+  proofReport?: ShadowPilotProofReport;
   overrideDelta?: OverrideDelta;
   driverMessage?: string;
   pilotReport?: PilotReportSnapshot;

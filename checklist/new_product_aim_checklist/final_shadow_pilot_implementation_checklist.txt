@@ -1,0 +1,129 @@
+FINAL SHADOW PILOT IMPLEMENTATION CHECKLIST
+
+Purpose:
+- Turn the full planning set into the final build checklist before end-to-end implementation begins.
+- Keep implementation grounded in the product thesis, UI decision plan, and shadow pilot proof model.
+
+========================================
+A. SOURCE OF TRUTH
+========================================
+
+Primary planning documents:
+- product_core_thesis.txt
+- routing_plus_glass_box_product_decision.txt
+- end_to_end_ui_decision_plan.txt
+- shadow_pilot_end_to_end_implementation_plan.txt
+- shadow_pilot_comparison_and_proof_model.txt
+- organization_ready_shadow_pilot_requirements.txt
+
+Implementation rule:
+- If a feature does not strengthen routing credibility, explanation, negotiation, quantified tradeoff, or structured learning, it should not block the shadow pilot.
+
+========================================
+B. PHASE COMPLETION CHECKLIST
+========================================
+
+PHASE 1 - LOCK THE PRODUCT THESIS INTO THE UI
+Done only when:
+- proposal-first hierarchy is clear
+- Why This Route stays above the fold
+- approve / request adjustment are attached to the reasoning flow
+- setup and pilot health are clearly secondary after proposal generation
+- the app reads as both a routing product and a decision console
+
+PHASE 2 - COMPLETE THE NEGOTIATION LAYER
+Done only when:
+- proposed / preview / updated proposal / approved states are all clear
+- override delta appears before confirmation
+- quick tags and note capture are smooth
+- previous vs updated proposal context is preserved
+- blocked corridor correction fits the same negotiation story
+
+PHASE 3 - STRENGTHEN EXPLANATION QUALITY
+Done only when:
+- decision summary is clear and business-facing
+- evidence feels trustworthy, not debuggy
+- fallback-aware wording exists
+- weaker-confidence situations are communicated honestly
+- route change explanation is understandable by dispatcher and manager
+
+PHASE 4 - REAL ORG DATA READINESS
+Done only when:
+- CSV / XLSX / JSON imports are reliable
+- validation is strong and user-facing
+- messy organizational inputs are survivable
+- planning context survives optimize, reroute, and export
+- baseline data from the organization can be plugged in at least at metrics level
+
+PHASE 5 - PILOT EVIDENCE AND ARTIFACTS
+Done only when:
+- pilot evidence rollups are usable
+- exports include decision context and proof context
+- historical organization outcome can be compared with ReasonRoute proposal
+- trust-profit / override behavior proof is visible in outputs
+- owner-facing artifacts tell the real savings story
+
+PHASE 6 - REASONING-SUPPORTIVE OPERATIONAL CONSTRAINTS
+Done only when:
+- only the constraints needed for pilot credibility are added
+- service time, time windows, dispatcher notes, and geoblocks support explanation
+- no generic enterprise parity work is bloating the core workflow
+
+========================================
+C. REQUIRED BUILD TRACKS
+========================================
+
+Track 1 - Routing product credibility
+- real data import
+- route generation
+- route metrics
+- road-snapped routing
+- provider and fallback visibility
+
+Track 2 - Decision layer credibility
+- explanation
+- approve / request adjustment
+- cost delta
+- previous vs updated comparison
+- driver explanation
+
+Track 3 - Historical proof model
+- internal baseline
+- organization historical baseline
+- comparison outputs
+- override / loss analysis structure
+
+Track 4 - Pilot reporting
+- evidence rollups
+- exports
+- proof artifacts
+- owner-facing summary outputs
+
+Track 5 - UI quality
+- routing mode before optimization
+- decision mode after optimization
+- premium, calm, dispatcher-friendly hierarchy
+
+========================================
+D. FIRST IMPLEMENTATION PRIORITY CHECK
+========================================
+
+Before adding new broad features, confirm:
+- Is the routing workflow credible enough to run the pilot?
+- Is the proposal review flow visually dominant enough?
+- Can we compare against the organization’s historical outcome?
+- Can we quantify tradeoff and override cost visibly?
+- Can we produce proof artifacts someone in the organization can read?
+
+If the answer is no to any of the above, that gap should outrank generic expansion.
+
+========================================
+E. FINAL IMPLEMENTATION RULE
+========================================
+
+We are now in implementation mode.
+The build should be judged by one question:
+- Will this make the product more ready to run a real organizational-data shadow pilot and prove decision-quality improvement credibly?
+
+If yes, it belongs.
+If not, it can wait.

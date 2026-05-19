@@ -1,0 +1,70 @@
+ROUTING PLUS GLASS BOX PRODUCT DECISION
+
+Purpose:
+- Lock the updated product decision clearly before further UI and implementation work.
+- Resolve whether ReasonRoute should behave like a thin negotiation layer, a pure routing dashboard, or a combined product.
+
+Final decision:
+- ReasonRoute will be built as a real routing product and dispatcher console, with the Glass Box decision layer built into its core workflow.
+- We are not keeping routing in the background.
+- We are not treating explanation and negotiation as a thin add-on over someone else’s system.
+- We are building a product that can actually run a fleet in a shadow pilot with real organizational data, while also exposing the decision, tradeoff, and learning layer that makes ReasonRoute different.
+
+Why this decision is correct:
+- Many organizations may not allow us to integrate only as a thin review layer on top of their existing routing software in the first pilot stage.
+- To run a real shadow pilot, we need to generate routes, display them credibly, let dispatchers review and adjust them, and export evidence from our own product.
+- That means routing is not just supporting infrastructure for now; it is part of the product surface.
+- At the same time, if we let the product drift into a generic route planner, we lose the real wedge.
+- Therefore, the right decision is to combine both identities into one coherent system.
+
+What ReasonRoute is now:
+1. A real routing and fleet-planning product
+2. A dispatcher review and negotiation console
+3. A Glass Box explanation and tradeoff system
+4. A shadow-pilot-ready product for real organizational data
+
+What ReasonRoute is not:
+- Not just a routing optimizer with a decorative explanation panel
+- Not just a thin AI review layer sitting on top of another routing stack
+- Not just a generic logistics operations dashboard
+
+Core product principle:
+- Routing must be first-class.
+- Negotiation must be first-class.
+- The product must do both without collapsing into clutter.
+
+UI consequence of this decision:
+- Before route generation, the product should feel like a capable routing and fleet-planning system.
+- After route generation, the product should shift its center of gravity toward proposal review, explanation, tradeoff visibility, and dispatcher action.
+- This means the UI is stateful by intent:
+  - planning mode before optimization
+  - decision mode after optimization
+- The routing product does not disappear after optimization.
+- The negotiation layer becomes primary at the moment the dispatcher must review or change a route.
+
+Working product model:
+- The map stays central because this is a real routing product.
+- Setup, intake, and fleet controls are legitimate product features and should feel serious and usable.
+- Once a proposal exists, the proposal, explanation, dispatcher action, and cost-delta flow should become the most visually dominant layer.
+- Secondary evidence, diagnostics, and exports should support that decision, not compete with it.
+
+Implication for the six-phase implementation plan:
+- The six-phase implementation plan remains valid.
+- We are not shrinking the product down to only the negotiation layer.
+- We are building the full routing workflow needed for a true shadow pilot.
+- But every phase must still preserve the Glass Box thesis:
+  - explain
+  - negotiate
+  - quantify
+  - learn
+
+Guiding rule going forward:
+- If a feature strengthens real routing execution for pilot credibility, it is valid.
+- If a feature strengthens the decision layer, it is valid.
+- If a feature does neither and only adds generic enterprise complexity, it should be deprioritized.
+
+Best one-line summary:
+- ReasonRoute is a real fleet-routing product with a Glass Box dispatcher decision layer at its core.
+
+Best UI summary:
+- Build a real routing dashboard that automatically transitions into a decision-first negotiation console once routes are generated.

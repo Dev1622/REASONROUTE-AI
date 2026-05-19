@@ -17,7 +17,18 @@ What this folder contains:
 - moat_and_proof_notes.txt
 - implementation_start_order.txt
 - current_status_against_new_aim.txt
+- routing_plus_glass_box_product_decision.txt
+- end_to_end_ui_decision_plan.txt
+- shadow_pilot_comparison_and_proof_model.txt
+- organization_ready_shadow_pilot_requirements.txt
+- final_shadow_pilot_implementation_checklist.txt
 
 How to use this folder:
 - Treat this as the active planning source for the product from now on.
 - Use the older files in checklist/ only as background reference.
+- Before implementation, align product decisions with:
+  - the six-phase implementation plan
+  - the routing plus Glass Box product decision
+  - the end-to-end UI decision plan
+  - the shadow pilot comparison and proof model
+  - the organization-ready shadow pilot requirements

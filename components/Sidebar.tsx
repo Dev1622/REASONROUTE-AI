@@ -2,7 +2,20 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, Download, FileJson, Play, RefreshCcw, Sparkles, Terminal, Upload, X } from 'lucide-react';
 import clsx from 'clsx';
 import * as XLSX from 'xlsx';
-import { AdjustmentReasonCode, AdjustmentRequest, AppConfigStatus, FleetConfig, FleetRoutePlan, OptimizationResult, ProcessingStatus } from '../types';
+import {
+  AdjustmentReasonCode,
+  AdjustmentRequest,
+  AppConfigStatus,
+  CompanyHistoricalMetricsBaseline,
+  CompanyHistoricalRouteOutcome,
+  FleetConfig,
+  FleetRoutePlan,
+  OptimizationResult,
+  ProcessingStatus,
+  ShadowPilotAggregateSnapshot,
+  ShadowPilotScenarioRecord,
+  ShadowPilotScenarioSummary,
+} from '../types';
 
 interface SidebarProps {
   onOptimize: (
@@ -10,8 +23,30 @@ interface SidebarProps {
     images: File[],
     preferences?: { weightTime?: number; weightEmissions?: number; weightDistance?: number },
     optimization?: { mode?: 'fast' | 'quality'; timeBudgetMs?: number; baselineMode?: 'dynamic' | 'distance' },
-    fleet?: FleetConfig
+    fleet?: FleetConfig,
+    scenarioMeta?: {
+      scenarioId?: string;
+      organizationName?: string;
+      scenarioLabel?: string;
+      routeDate?: string;
+      shiftLabel?: string;
+      historicalBaseline?: CompanyHistoricalMetricsBaseline;
+      historicalRoutes?: CompanyHistoricalRouteOutcome[];
+    }
   ) => void;
+  onSaveScenario: (payload: {
+    organizationName: string;
+    scenarioLabel: string;
+    routeDate?: string;
+    shiftLabel?: string;
+    stopsText: string;
+    fleet?: FleetConfig;
+    preferences?: { weightTime?: number; weightEmissions?: number; weightDistance?: number };
+    optimization?: { mode?: 'fast' | 'quality'; timeBudgetMs?: number; baselineMode?: 'dynamic' | 'distance' };
+    historicalBaseline?: CompanyHistoricalMetricsBaseline;
+    historicalRoutes?: CompanyHistoricalRouteOutcome[];
+  }) => void;
+  onReplayScenario: (scenarioId: string) => void;
   onApprove: () => void;
   onPreviewAdjustment: (adjustmentRequest: AdjustmentRequest) => void;
   onConfirmAdjustment: () => void;
@@ -23,6 +58,9 @@ interface SidebarProps {
   history: { ts: string; improvement: { distancePct: number; timePct: number; emissionsPct: number }; baseline: number; optimized: number; vehicles: number; fallbackLegCount: number; rerouted: boolean; timeDelta: number; emissionsDelta: number }[];
   errorMessage?: string | null;
   configStatus: AppConfigStatus | null;
+  scenarios: ShadowPilotScenarioSummary[];
+  pilotAggregate: ShadowPilotAggregateSnapshot | null;
+  activeScenario: ShadowPilotScenarioRecord | null;
 }
 
 const SAMPLE_SCENARIOS = [
@@ -85,6 +123,14 @@ function buildFleetSummary(result: OptimizationResult) {
     overrideDelta: result.overrideDelta,
     driverMessage: result.driverMessage,
     pilotReport: result.pilotReport,
+    proofReport: result.proofReport,
+    internalBaselineComparison: result.internalBaselineComparison,
+    organizationComparison: result.organizationComparison,
+    overrideAnalysis: result.overrideAnalysis,
+    organizationName: result.organizationName,
+    scenarioLabel: result.scenarioLabel,
+    routeDate: result.routeDate,
+    shiftLabel: result.shiftLabel,
     fleetConfig: result.fleetConfig,
     comparison: result.comparison,
     metrics: result.metrics,
@@ -206,6 +252,13 @@ function validateStopsTextInput(source: string) {
   return Array.from(new Set(issues));
 }
 
+function parseOptionalNumber(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 const RouteCard: React.FC<{ route: FleetRoutePlan; selected: boolean; tone: 'baseline' | 'optimized'; onClick: () => void }> = ({ route, selected, tone, onClick }) => {
   return (
     <button
@@ -234,7 +287,25 @@ const RouteCard: React.FC<{ route: FleetRoutePlan; selected: boolean; tone: 'bas
   );
 };
 
-const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjustment, onConfirmAdjustment, onCancelAdjustmentPreview, onSelectRoute, status, result, previewActive, history, errorMessage, configStatus }) => {
+const Sidebar: React.FC<SidebarProps> = ({
+  onOptimize,
+  onSaveScenario,
+  onReplayScenario,
+  onApprove,
+  onPreviewAdjustment,
+  onConfirmAdjustment,
+  onCancelAdjustmentPreview,
+  onSelectRoute,
+  status,
+  result,
+  previewActive,
+  history,
+  errorMessage,
+  configStatus,
+  scenarios,
+  pilotAggregate,
+  activeScenario,
+}) => {
   const [stops, setStops] = useState(SAMPLE_SCENARIOS[0].value);
   const [images, setImages] = useState<File[]>([]);
   const [jsonFileName, setJsonFileName] = useState<string | null>(null);
@@ -252,6 +323,14 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjus
   const [adjustmentNote, setAdjustmentNote] = useState('');
   const [importIssues, setImportIssues] = useState<string[]>([]);
   const [evidencePanel, setEvidencePanel] = useState<EvidencePanel>('pilot');
+  const [organizationName, setOrganizationName] = useState('Sample Logistics Co.');
+  const [scenarioLabel, setScenarioLabel] = useState('Morning Replay');
+  const [routeDate, setRouteDate] = useState('');
+  const [shiftLabel, setShiftLabel] = useState('AM Shift');
+  const [historicalDistance, setHistoricalDistance] = useState('');
+  const [historicalTime, setHistoricalTime] = useState('');
+  const [historicalEmissions, setHistoricalEmissions] = useState('');
+  const [historicalFuelCost, setHistoricalFuelCost] = useState('');
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -280,6 +359,19 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjus
     }
   }, [result]);
 
+  useEffect(() => {
+    if (!activeScenario) return;
+    setOrganizationName(activeScenario.organizationName);
+    setScenarioLabel(activeScenario.scenarioLabel);
+    setRouteDate(activeScenario.routeDate ?? '');
+    setShiftLabel(activeScenario.shiftLabel ?? '');
+    setStops(activeScenario.stopsText);
+    setHistoricalDistance(activeScenario.historicalBaseline?.distance?.toString() ?? '');
+    setHistoricalTime(activeScenario.historicalBaseline?.time?.toString() ?? '');
+    setHistoricalEmissions(activeScenario.historicalBaseline?.emissions?.toString() ?? '');
+    setHistoricalFuelCost(activeScenario.historicalBaseline?.fuelCost?.toString() ?? '');
+  }, [activeScenario]);
+
   const isProcessing = ![ProcessingStatus.IDLE, ProcessingStatus.COMPLETE, ProcessingStatus.ERROR].includes(status);
   const parsedVehicleLabels = useMemo(() => vehicleNames.split(',').map(label => label.trim()).filter(Boolean).slice(0, vehicleCount), [vehicleNames, vehicleCount]);
   const selectedTagMeta = useMemo(() => TRIBAL_TAGS.find(tag => tag.code === selectedTag), [selectedTag]);
@@ -287,6 +379,24 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjus
     () => (result?.decisionSummary?.evidence?.length ? result.decisionSummary.evidence : (result?.logs ?? []).map(sanitizeReasoningLine).filter(Boolean).slice(0, 4)),
     [result]
   );
+  const historicalBaseline = useMemo<CompanyHistoricalMetricsBaseline | undefined>(() => {
+    const distance = parseOptionalNumber(historicalDistance);
+    const time = parseOptionalNumber(historicalTime);
+    const emissions = parseOptionalNumber(historicalEmissions);
+    const fuelCost = parseOptionalNumber(historicalFuelCost);
+    if ([distance, time, emissions, fuelCost].every(value => value === undefined)) {
+      return undefined;
+    }
+    return {
+      distance,
+      time,
+      emissions,
+      fuelCost,
+      vehicleCount,
+      routeDate: routeDate || undefined,
+      shiftLabel: shiftLabel || undefined,
+    };
+  }, [historicalDistance, historicalTime, historicalEmissions, historicalFuelCost, routeDate, shiftLabel, vehicleCount]);
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
@@ -362,7 +472,40 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjus
     const issues = validateStopsTextInput(stops);
     setImportIssues(issues);
     if (issues.length > 0) return;
-    onOptimize(stops, images, weights, { ...optimization, baselineMode }, { vehicleCount, vehicleLabels: parsedVehicleLabels });
+    onOptimize(
+      stops,
+      images,
+      weights,
+      { ...optimization, baselineMode },
+      { vehicleCount, vehicleLabels: parsedVehicleLabels },
+      {
+        scenarioId: activeScenario?.id,
+        organizationName: organizationName.trim() || undefined,
+        scenarioLabel: scenarioLabel.trim() || undefined,
+        routeDate: routeDate || undefined,
+        shiftLabel: shiftLabel || undefined,
+        historicalBaseline,
+        historicalRoutes: activeScenario?.historicalRoutes,
+      }
+    );
+  };
+
+  const handleSaveScenarioClick = () => {
+    const issues = validateStopsTextInput(stops);
+    setImportIssues(issues);
+    if (issues.length > 0) return;
+    onSaveScenario({
+      organizationName: organizationName.trim(),
+      scenarioLabel: scenarioLabel.trim(),
+      routeDate: routeDate || undefined,
+      shiftLabel: shiftLabel || undefined,
+      stopsText: stops,
+      fleet: { vehicleCount, vehicleLabels: parsedVehicleLabels },
+      preferences: weights,
+      optimization: { ...optimization, baselineMode },
+      historicalBaseline,
+      historicalRoutes: activeScenario?.historicalRoutes,
+    });
   };
 
   const queueAdjustmentReview = () => {
@@ -462,6 +605,95 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjus
 
         <div className="space-y-3 rounded-md border border-slate-800 bg-slate-950/40 p-3">
           <div className="flex items-center justify-between">
+            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Shadow Pilot Scenario</label>
+            <span className="font-mono text-[10px] text-slate-500">historical replay ready</span>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <input
+              type="text"
+              value={organizationName}
+              onChange={e => setOrganizationName(e.target.value)}
+              disabled={isProcessing}
+              className="rounded border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-emerald-500"
+              placeholder="Organization name"
+            />
+            <input
+              type="text"
+              value={scenarioLabel}
+              onChange={e => setScenarioLabel(e.target.value)}
+              disabled={isProcessing}
+              className="rounded border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-emerald-500"
+              placeholder="Scenario label"
+            />
+            <input
+              type="date"
+              value={routeDate}
+              onChange={e => setRouteDate(e.target.value)}
+              disabled={isProcessing}
+              className="rounded border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-emerald-500"
+            />
+            <input
+              type="text"
+              value={shiftLabel}
+              onChange={e => setShiftLabel(e.target.value)}
+              disabled={isProcessing}
+              className="rounded border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-emerald-500"
+              placeholder="Shift label"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <input type="number" value={historicalDistance} onChange={e => setHistoricalDistance(e.target.value)} disabled={isProcessing} className="rounded border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-emerald-500" placeholder="Historical distance km" />
+            <input type="number" value={historicalTime} onChange={e => setHistoricalTime(e.target.value)} disabled={isProcessing} className="rounded border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-emerald-500" placeholder="Historical time min" />
+            <input type="number" value={historicalEmissions} onChange={e => setHistoricalEmissions(e.target.value)} disabled={isProcessing} className="rounded border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-emerald-500" placeholder="Historical emissions kg" />
+            <input type="number" value={historicalFuelCost} onChange={e => setHistoricalFuelCost(e.target.value)} disabled={isProcessing} className="rounded border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-emerald-500" placeholder="Historical fuel cost" />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={handleSaveScenarioClick}
+              disabled={isProcessing || !organizationName.trim() || !scenarioLabel.trim()}
+              className="rounded border border-blue-500/40 bg-blue-950/20 px-3 py-2 text-xs font-semibold text-blue-200 transition-colors hover:bg-blue-950/35 disabled:border-slate-800 disabled:bg-slate-900 disabled:text-slate-600"
+            >
+              Save Scenario
+            </button>
+            <button
+              type="button"
+              onClick={handleOptimizeClick}
+              disabled={isProcessing || !stops.trim()}
+              className="rounded border border-emerald-500/40 bg-emerald-950/20 px-3 py-2 text-xs font-semibold text-emerald-200 transition-colors hover:bg-emerald-950/35 disabled:border-slate-800 disabled:bg-slate-900 disabled:text-slate-600"
+            >
+              Plan Fleet
+            </button>
+          </div>
+          <div className="space-y-2">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Saved historical scenarios</div>
+            <div className="max-h-32 space-y-2 overflow-y-auto rounded border border-slate-800 bg-slate-950/70 p-2">
+              {scenarios.length === 0 ? <div className="text-[11px] italic text-slate-600">No saved scenarios yet.</div> : null}
+              {scenarios.map(scenario => (
+                <button
+                  key={scenario.id}
+                  type="button"
+                  disabled={isProcessing}
+                  onClick={() => onReplayScenario(scenario.id)}
+                  className={clsx(
+                    'w-full rounded border px-2 py-2 text-left text-[11px] transition-colors',
+                    activeScenario?.id === scenario.id ? 'border-violet-500/40 bg-violet-950/20 text-violet-100' : 'border-slate-800 bg-slate-900/60 text-slate-300 hover:border-slate-700'
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold">{scenario.organizationName}</span>
+                    <span className="font-mono text-[10px] text-slate-500">{scenario.runCount} runs</span>
+                  </div>
+                  <div className="mt-1 text-slate-400">{scenario.scenarioLabel}</div>
+                  <div className="mt-1 text-[10px] text-slate-500">{scenario.routeDate ?? 'No date'} {scenario.shiftLabel ? `| ${scenario.shiftLabel}` : ''}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-3 rounded-md border border-slate-800 bg-slate-950/40 p-3">
+          <div className="flex items-center justify-between">
             <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Fleet Setup</label>
             <span className="font-mono text-[10px] text-slate-500">Single depot fleet</span>
           </div>
@@ -550,6 +782,11 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjus
                 <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-violet-300"><Sparkles className="h-3.5 w-3.5" />{previewActive ? 'Adjustment Preview' : 'Route Review'}</div>
                 <div className="mt-2 text-sm font-semibold text-slate-100">{result.decisionSummary?.title ?? 'Route proposal is ready for review'}</div>
                 <div className="mt-1 text-xs text-slate-400">{result.decisionSummary?.summary ?? 'Review the recommendation before approving or requesting a change.'}</div>
+                {result.organizationName || result.scenarioLabel ? (
+                  <div className="mt-2 text-[11px] text-slate-500">
+                    {result.organizationName ?? 'Organization'}{result.scenarioLabel ? ` / ${result.scenarioLabel}` : ''}{result.routeDate ? ` / ${result.routeDate}` : ''}
+                  </div>
+                ) : null}
               </div>
               <div className={clsx('rounded-full border px-2 py-1 font-mono text-[10px] uppercase tracking-wider', result.decisionStatus === 'approved' ? 'border-emerald-500/40 bg-emerald-950/20 text-emerald-300' : result.decisionStatus === 'updated_proposal' ? 'border-violet-500/40 bg-violet-950/20 text-violet-300' : 'border-slate-700 bg-slate-950/60 text-slate-300')}>
                 {decisionStateLabel(result.decisionStatus)}
@@ -654,6 +891,20 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjus
                 <div>{result.driverMessage}</div>
               </div>
             ) : null}
+            {result.organizationComparison ? (
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded border border-emerald-500/20 bg-emerald-950/10 px-3 py-2 text-[11px] text-emerald-100">
+                  <div className="mb-1 font-bold uppercase tracking-wider text-emerald-300">Historical Comparison</div>
+                  <div>{result.organizationComparison.headline}</div>
+                  <div className="mt-1 text-emerald-200/80">{result.organizationComparison.detail}</div>
+                </div>
+                <div className="rounded border border-sky-500/20 bg-sky-950/10 px-3 py-2 text-[11px] text-sky-100">
+                  <div className="mb-1 font-bold uppercase tracking-wider text-sky-300">Decision Verdict</div>
+                  <div>{result.overrideAnalysis?.headline ?? 'Evidence pending'}</div>
+                  <div className="mt-1 text-sky-200/80">{result.overrideAnalysis?.detail}</div>
+                </div>
+              </div>
+            ) : null}
           </div>
         ) : null}
         {result?.routeWarnings?.length ? <div className="space-y-1 rounded-md border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">{result.routeWarnings.map((warning, index) => <div key={index} className="flex items-start gap-2"><AlertCircle className="mt-0.5 h-3 w-3" /><span>{warning}</span></div>)}</div> : null}
@@ -702,25 +953,43 @@ const Sidebar: React.FC<SidebarProps> = ({ onOptimize, onApprove, onPreviewAdjus
               <div className="grid grid-cols-2 gap-2">
                 <div className="rounded border border-slate-800 bg-slate-950/70 p-3">
                   <div className="text-[10px] uppercase tracking-wider text-slate-500">Run count</div>
-                  <div className="mt-1 font-mono text-xl text-slate-100">{pilotReport?.runCount ?? history.length}</div>
+                  <div className="mt-1 font-mono text-xl text-slate-100">{pilotAggregate?.runCount ?? pilotReport?.runCount ?? history.length}</div>
                 </div>
                 <div className="rounded border border-slate-800 bg-slate-950/70 p-3">
-                  <div className="text-[10px] uppercase tracking-wider text-slate-500">Fallback rate</div>
-                  <div className="mt-1 font-mono text-xl text-slate-100">{(pilotReport?.fallbackRatePct ?? 0).toFixed(1)}%</div>
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500">Scenario count</div>
+                  <div className="mt-1 font-mono text-xl text-slate-100">{pilotAggregate?.scenarioCount ?? 0}</div>
                 </div>
                 <div className="rounded border border-slate-800 bg-slate-950/70 p-3">
                   <div className="text-[10px] uppercase tracking-wider text-slate-500">Distance saved</div>
-                  <div className="mt-1 font-mono text-xl text-emerald-300">{(pilotReport?.distanceDeltaKm ?? 0).toFixed(1)} km</div>
+                  <div className="mt-1 font-mono text-xl text-emerald-300">{((pilotAggregate?.cumulativeDistanceSavedKm ?? pilotReport?.distanceDeltaKm) ?? 0).toFixed(1)} km</div>
                 </div>
                 <div className="rounded border border-slate-800 bg-slate-950/70 p-3">
                   <div className="text-[10px] uppercase tracking-wider text-slate-500">Time saved</div>
-                  <div className="mt-1 font-mono text-xl text-emerald-300">{(pilotReport?.timeDeltaMin ?? 0).toFixed(1)} min</div>
+                  <div className="mt-1 font-mono text-xl text-emerald-300">{((pilotAggregate?.cumulativeTimeSavedMin ?? pilotReport?.timeDeltaMin) ?? 0).toFixed(1)} min</div>
                 </div>
               </div>
               <div className="rounded border border-slate-800 bg-slate-950/70 p-3 text-[11px] text-slate-400">
                 <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">Session evidence</div>
                 <div>Reroutes: {pilotReport?.rerouteCount ?? 0} | Approved proposals: {pilotReport?.approvedCount ?? 0} | Emissions delta: {(pilotReport?.emissionsDeltaKg ?? 0).toFixed(3)} kg CO2</div>
+                {pilotAggregate ? (
+                  <div className="mt-2">
+                    Historical comparisons: {pilotAggregate.historicalComparisonCount} | System correct: {pilotAggregate.systemCorrectCount} | Dispatcher correct: {pilotAggregate.dispatcherCorrectCount} | Third alternative: {pilotAggregate.thirdAlternativeCount}
+                  </div>
+                ) : null}
               </div>
+              {result?.proofReport ? (
+                <div className="rounded border border-slate-800 bg-slate-950/70 p-3 text-[11px] text-slate-300">
+                  <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">Replay Proof Report</div>
+                  <div className="font-semibold text-slate-100">{result.proofReport.organizationComparison?.headline ?? result.proofReport.internalBaselineComparison.headline}</div>
+                  <div className="mt-1 text-slate-400">{result.proofReport.overrideAnalysis.detail}</div>
+                  <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-[10px]">
+                    <div>Distance delta: {result.proofReport.organizationComparison?.distance.delta ?? result.proofReport.internalBaselineComparison.distance.delta ?? 0}</div>
+                    <div>Time delta: {result.proofReport.organizationComparison?.time.delta ?? result.proofReport.internalBaselineComparison.time.delta ?? 0}</div>
+                    <div>Emissions delta: {result.proofReport.organizationComparison?.emissions.delta ?? result.proofReport.internalBaselineComparison.emissions.delta ?? 0}</div>
+                    <div>Fuel delta: {result.proofReport.organizationComparison?.fuelCost?.delta ?? result.proofReport.internalBaselineComparison.fuelCost?.delta ?? 0}</div>
+                  </div>
+                </div>
+              ) : null}
               <div>
                 <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500">Recent Runs</label>
                 <div className="max-h-36 space-y-2 overflow-y-auto rounded-md border border-slate-800 bg-slate-950 p-3">
