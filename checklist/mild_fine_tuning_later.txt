@@ -1,0 +1,107 @@
+MILD FINE TUNING - LATER
+
+Purpose:
+- Capture small wording and presentation improvements that should wait until after the core shadow-pilot workflow is protected.
+- These are not blockers.
+- Do not treat these as product redesign tasks.
+
+Core rule:
+- The current product flow is already correct:
+  proposal -> explanation -> request adjustment -> override cost delta -> confirm adjustment or keep current proposal.
+- Fine tuning should preserve this flow, not replace it.
+
+========================================
+1. OVERRIDE COST DELTA LANGUAGE
+========================================
+
+Current behavior:
+- Override Cost Delta appears only after an adjustment is requested.
+- This is correct because the system needs a previous proposal and a preview proposal before it can compute a real delta.
+
+Possible later wording improvement:
+- Make the consequence sentence slightly more owner-facing.
+
+Example current style:
+- Confirming this adjustment changes the plan by +3.3 min, +2.04 km, and +$1.47 in estimated fuel impact.
+
+Example future style:
+- This adjustment respects the dispatcher concern, but adds +3.3 min, +2.04 km, and +$1.47 in estimated fuel impact.
+
+Reason:
+- Keep the tone non-accusatory toward dispatchers.
+- Make the business tradeoff clearer for owners and managers.
+
+========================================
+2. NEGOTIATION RESULT TONE
+========================================
+
+Current behavior:
+- The preview state labels the change direction as better, worse, mixed, or flat.
+- This is useful and should stay.
+
+Possible later wording improvement:
+- Replace harsh or judgmental wording with decision-support wording where appropriate.
+
+Examples:
+- "Worse" can remain as a compact label, but the explanation text should clarify why.
+- "Route needs dispatcher review" is a good tone because it supports human judgment instead of blaming the dispatcher.
+
+Reason:
+- The product should feel like a Glass Box negotiation layer, not an audit that punishes dispatchers.
+
+========================================
+3. PROOF / EXPORT LANGUAGE
+========================================
+
+Current behavior:
+- Exports include decision status, adjustment request, override delta, driver-facing explanation, proof report, and pilot report fields.
+
+Possible later wording improvement:
+- Make exported proof artifacts use stronger Trust-Profit language.
+
+Possible labels:
+- Explained proposal
+- Requested adjustment
+- Cost delta reviewed
+- Decision outcome
+- Avoided leakage
+- Historical comparison
+
+Reason:
+- The in-app workflow already proves the thesis.
+- The exported artifact should tell the same story clearly to an owner who was not present during the demo.
+
+========================================
+4. PILOT EVIDENCE LABELS
+========================================
+
+Current behavior:
+- Pilot evidence shows run count, scenario count, distance saved, time saved, reroutes, approvals, emissions delta, and proof report details.
+
+Possible later wording improvement:
+- When enough pilot data exists, make labels more tied to the product thesis.
+
+Possible labels:
+- Decision savings
+- Override cost reviewed
+- Blind overrides prevented
+- Avoided route leakage
+- Historical fuel savings
+
+Reason:
+- These labels should only be sharpened after the underlying data is reliable enough to support the claim.
+
+========================================
+5. DO NOT CHANGE NOW
+========================================
+
+Do not change right now:
+- The core route review flow.
+- The conditional timing of Override Cost Delta.
+- The approve / request adjustment / confirm adjustment / keep current proposal structure.
+- The left decision rail plus map plus pilot evidence architecture.
+- The product's current Glass Box negotiation behavior.
+
+Final note:
+- These are mild polish items for later.
+- The current priority remains validating the end-to-end shadow pilot workflow and making adjustment reasons/proof artifacts persistent and credible.

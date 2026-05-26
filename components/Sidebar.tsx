@@ -65,14 +65,14 @@ interface SidebarProps {
 
 const SAMPLE_SCENARIOS = [
   {
-    label: 'Geo demo',
-    value: `Warehouse Hub, 12.9716, 77.5946
-Indiranagar Drop, 12.9784, 77.6408
-Koramangala Stop, 12.9352, 77.6245
-HSR Layout Stop, 12.9116, 77.6474
-BTM Layout Stop, 12.9166, 77.6101
-Jayanagar Stop, 12.9250, 77.5938
-Rajajinagar Stop, 12.9915, 77.5544`,
+    label: 'US demo',
+    value: `Chicago Depot, 41.8781, -87.6298
+West Loop Drop, 41.8840, -87.6470
+Lincoln Park Stop, 41.9214, -87.6513
+Logan Square Stop, 41.9231, -87.7093
+Wicker Park Stop, 41.9088, -87.6796
+Hyde Park Stop, 41.7943, -87.5907
+Bridgeport Stop, 41.8378, -87.6511`,
   },
   {
     label: 'Grid demo',
