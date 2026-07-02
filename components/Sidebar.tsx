@@ -51,6 +51,7 @@ interface SidebarProps {
   onPreviewAdjustment: (adjustmentRequest: AdjustmentRequest) => void;
   onConfirmAdjustment: () => void;
   onCancelAdjustmentPreview: () => void;
+  onUseAlternative: (result: OptimizationResult) => void;
   onSelectRoute: (routeId?: string) => void;
   status: ProcessingStatus;
   result: OptimizationResult | null;
@@ -259,6 +260,10 @@ function parseOptionalNumber(value: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function signed(value: number, digits = 1) {
+  return `${value >= 0 ? '+' : ''}${value.toFixed(digits)}`;
+}
+
 const RouteCard: React.FC<{ route: FleetRoutePlan; selected: boolean; tone: 'baseline' | 'optimized'; onClick: () => void }> = ({ route, selected, tone, onClick }) => {
   return (
     <button
@@ -295,6 +300,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   onPreviewAdjustment,
   onConfirmAdjustment,
   onCancelAdjustmentPreview,
+  onUseAlternative,
   onSelectRoute,
   status,
   result,
@@ -321,6 +327,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [selectedAdjustment, setSelectedAdjustment] = useState<AdjustmentRequest>(ADJUSTMENT_OPTIONS[0]);
   const [selectedTag, setSelectedTag] = useState<AdjustmentReasonCode>('school_zone_traffic');
   const [adjustmentNote, setAdjustmentNote] = useState('');
+  const [alternativesOpen, setAlternativesOpen] = useState(false);
   const [importIssues, setImportIssues] = useState<string[]>([]);
   const [evidencePanel, setEvidencePanel] = useState<EvidencePanel>('pilot');
   const [organizationName, setOrganizationName] = useState('Sample Logistics Co.');
@@ -354,6 +361,10 @@ const Sidebar: React.FC<SidebarProps> = ({
   }, [result?.adjustmentRequest]);
 
   useEffect(() => {
+    setAlternativesOpen(false);
+  }, [result?.overrideDelta?.summary]);
+
+  useEffect(() => {
     if (result) {
       setSetupCollapsed(true);
     }
@@ -375,6 +386,12 @@ const Sidebar: React.FC<SidebarProps> = ({
   const isProcessing = ![ProcessingStatus.IDLE, ProcessingStatus.COMPLETE, ProcessingStatus.ERROR].includes(status);
   const parsedVehicleLabels = useMemo(() => vehicleNames.split(',').map(label => label.trim()).filter(Boolean).slice(0, vehicleCount), [vehicleNames, vehicleCount]);
   const selectedTagMeta = useMemo(() => TRIBAL_TAGS.find(tag => tag.code === selectedTag), [selectedTag]);
+  const negotiatedAlternatives = result?.negotiatedAlternatives ?? [];
+  const shouldShowNegotiatedAlternatives =
+    previewActive &&
+    Boolean(result?.overrideDelta) &&
+    (result?.overrideDelta?.direction === 'worse' || result?.overrideDelta?.direction === 'mixed') &&
+    negotiatedAlternatives.length > 0;
   const reasoningEvidence = useMemo(
     () => (result?.decisionSummary?.evidence?.length ? result.decisionSummary.evidence : (result?.logs ?? []).map(sanitizeReasoningLine).filter(Boolean).slice(0, 4)),
     [result]
@@ -842,6 +859,51 @@ const Sidebar: React.FC<SidebarProps> = ({
                   <div>Emissions: {result.overrideDelta.emissionsKg >= 0 ? '+' : ''}{result.overrideDelta.emissionsKg.toFixed(3)} kg</div>
                   <div>Fuel cost: {result.overrideDelta.estimatedFuelCost >= 0 ? '+' : ''}${Math.abs(result.overrideDelta.estimatedFuelCost).toFixed(2)}</div>
                 </div>
+                {shouldShowNegotiatedAlternatives ? (
+                  <div className="space-y-2 rounded border border-amber-400/25 bg-slate-950/50 p-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="font-semibold text-amber-200">This override adds cost.</div>
+                      <button
+                        type="button"
+                        className="rounded border border-amber-400/30 px-2 py-1 text-left text-[11px] font-semibold text-amber-100 hover:bg-amber-950/30"
+                        onClick={() => setAlternativesOpen(prev => !prev)}
+                      >
+                        {alternativesOpen ? 'Hide safer alternatives' : 'ReasonRoute found safer alternatives'}
+                      </button>
+                    </div>
+                    {alternativesOpen ? (
+                      <div className="space-y-2">
+                        {negotiatedAlternatives.map(alternative => (
+                          <div key={alternative.id} className="rounded border border-slate-700/80 bg-slate-950/70 p-2">
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <div className="font-bold text-slate-100">{alternative.label}</div>
+                                <div className="mt-1 text-[11px] leading-5 text-slate-400">{alternative.summary}</div>
+                              </div>
+                              <span className={clsx('rounded border px-2 py-1 font-mono text-[10px] uppercase', alternative.delta.direction === 'better' ? 'border-emerald-500/30 text-emerald-300' : alternative.delta.direction === 'worse' ? 'border-red-500/30 text-red-300' : 'border-amber-500/30 text-amber-300')}>
+                                {alternative.delta.direction}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 gap-1 font-mono text-[10px] text-slate-300">
+                              <div>Time {signed(alternative.delta.timeMin)} min</div>
+                              <div>Distance {signed(alternative.delta.distanceKm, 2)} km</div>
+                              <div>Emissions {signed(alternative.delta.emissionsKg, 3)} kg</div>
+                              <div>Fuel {alternative.delta.estimatedFuelCost >= 0 ? '+' : ''}${Math.abs(alternative.delta.estimatedFuelCost).toFixed(2)}</div>
+                            </div>
+                            <button
+                              type="button"
+                              disabled={isProcessing}
+                              className="mt-2 w-full rounded border border-violet-500/40 bg-violet-950/20 px-3 py-2 text-[11px] font-semibold text-violet-100 transition-colors hover:bg-violet-950/35"
+                              onClick={() => onUseAlternative(alternative.result)}
+                            >
+                              Use This Alternative
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
                 <div className="grid grid-cols-2 gap-2">
                   <button type="button" disabled={isProcessing} className="rounded border border-violet-500/40 bg-violet-950/20 px-3 py-2 text-sm font-semibold text-violet-200 transition-colors hover:bg-violet-950/35" onClick={onConfirmAdjustment}>
                     Confirm Adjustment

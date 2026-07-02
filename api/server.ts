@@ -14,6 +14,8 @@ import {
   FleetRoutePlan,
   Geofence,
   Metrics,
+  NegotiatedAlternative,
+  NegotiatedAlternativeId,
   Node,
   OptimizationResult,
   PlanningInputs,
@@ -323,6 +325,119 @@ function applyAdjustmentToInputs(inputs: PlanningInputs, adjustmentRequest: Adju
     default:
       return inputs;
   }
+}
+
+const NEGOTIATED_ALTERNATIVE_PROFILES: Array<{
+  id: NegotiatedAlternativeId;
+  label: string;
+  summary: string;
+  preferences: NonNullable<PlanningInputs['preferences']>;
+  minBudgetMs: number;
+}> = [
+  {
+    id: 'fastest',
+    label: 'Fastest',
+    summary: 'Prioritizes ETA while keeping the dispatcher request in view.',
+    preferences: { weightTime: 0.8, weightDistance: 0.1, weightEmissions: 0.1 },
+    minBudgetMs: 120,
+  },
+  {
+    id: 'lowest_cost',
+    label: 'Lowest Cost',
+    summary: 'Minimizes distance, fuel, and emissions where the route can still stay workable.',
+    preferences: { weightTime: 0.15, weightDistance: 0.6, weightEmissions: 0.25 },
+    minBudgetMs: 120,
+  },
+  {
+    id: 'balanced',
+    label: 'Balanced',
+    summary: 'Balances ETA, distance, fuel, and the dispatcher adjustment context.',
+    preferences: { weightTime: 0.45, weightDistance: 0.35, weightEmissions: 0.2 },
+    minBudgetMs: 140,
+  },
+];
+
+function shouldBuildNegotiatedAlternatives(result: OptimizationResult): boolean {
+  return result.overrideDelta?.direction === 'worse' || result.overrideDelta?.direction === 'mixed';
+}
+
+function applyAlternativeProfile(
+  inputs: PlanningInputs,
+  profile: (typeof NEGOTIATED_ALTERNATIVE_PROFILES)[number]
+): PlanningInputs {
+  const currentOptimization = inputs.optimization ?? {};
+  return {
+    ...inputs,
+    preferences: profile.preferences,
+    optimization: {
+      ...currentOptimization,
+      mode: 'quality',
+      timeBudgetMs: Math.max(currentOptimization.timeBudgetMs ?? 40, profile.minBudgetMs),
+    },
+  };
+}
+
+function attachProofReport(result: OptimizationResult): OptimizationResult {
+  const proofReport = buildProofReport(result);
+  return {
+    ...result,
+    internalBaselineComparison: proofReport.internalBaselineComparison,
+    organizationComparison: proofReport.organizationComparison,
+    overrideAnalysis: proofReport.overrideAnalysis,
+    proofReport,
+  };
+}
+
+async function buildNegotiatedAlternatives(
+  sourceResult: OptimizationResult,
+  planningInputs: PlanningInputs,
+  geofences: Geofence[],
+  adjustmentRequest: AdjustmentRequest,
+  previousProposal: ProposalSnapshot
+): Promise<NegotiatedAlternative[]> {
+  if (!shouldBuildNegotiatedAlternatives(sourceResult)) return [];
+  const alternatives: NegotiatedAlternative[] = [];
+
+  for (const profile of NEGOTIATED_ALTERNATIVE_PROFILES) {
+    try {
+      const alternativeInputs = applyAlternativeProfile(planningInputs, profile);
+      const baseResult = await optimizeRoute(
+        alternativeInputs.stopsText,
+        [],
+        alternativeInputs.preferences,
+        alternativeInputs.optimization,
+        alternativeInputs.fleet
+      );
+      const routed = await applyRoadRouting(
+        {
+          ...(baseResult as unknown as OptimizationResult),
+          planningInputs: alternativeInputs,
+          scenarioId: sourceResult.scenarioId,
+          scenarioLabel: sourceResult.scenarioLabel,
+          organizationName: sourceResult.organizationName,
+          routeDate: sourceResult.routeDate,
+          shiftLabel: sourceResult.shiftLabel,
+          historicalBaseline: sourceResult.historicalBaseline,
+          historicalRoutes: sourceResult.historicalRoutes,
+        },
+        geofences,
+        adjustmentRequest,
+        previousProposal
+      );
+      if (!routed.overrideDelta) continue;
+      alternatives.push({
+        id: profile.id,
+        label: profile.label,
+        summary: profile.summary,
+        result: attachProofReport(routed),
+        delta: routed.overrideDelta,
+      });
+    } catch (err) {
+      console.warn(`[negotiated-alternative:${profile.id}] failed`, err);
+    }
+  }
+
+  return alternatives;
 }
 
 function buildImprovement(baseline: Metrics, optimized: Metrics) {
@@ -1162,19 +1277,15 @@ app.post(['/optimize', '/api/optimize'], async (req, res) => {
       },
       Array.isArray(geofences) ? geofences : []
     );
-    const proofReport = buildProofReport(result);
-    result.internalBaselineComparison = proofReport.internalBaselineComparison;
-    result.organizationComparison = proofReport.organizationComparison;
-    result.overrideAnalysis = proofReport.overrideAnalysis;
-    result.proofReport = proofReport;
+    const provedResult = attachProofReport(result);
 
     res.json({
       ok: true,
       meta: { generatedAt: new Date().toISOString() },
-      result,
+      result: provedResult,
       geojson: {
         type: 'FeatureCollection',
-        features: fleetGeojsonFeatures(result),
+        features: fleetGeojsonFeatures(provedResult),
       },
     });
   } catch (err: any) {
@@ -1239,11 +1350,20 @@ app.post(['/reroute', '/api/reroute'], async (req, res) => {
       );
     }
 
-    const proofReport = buildProofReport(rerouted);
-    rerouted.internalBaselineComparison = proofReport.internalBaselineComparison;
-    rerouted.organizationComparison = proofReport.organizationComparison;
-    rerouted.overrideAnalysis = proofReport.overrideAnalysis;
-    rerouted.proofReport = proofReport;
+    if (adjustmentRequest && shouldBuildNegotiatedAlternatives(rerouted)) {
+      const planningInputs = normalizePlanningInputs(result as OptimizationResult);
+      if (planningInputs?.stopsText) {
+        rerouted.negotiatedAlternatives = await buildNegotiatedAlternatives(
+          rerouted,
+          planningInputs,
+          nextGeofences,
+          adjustmentRequest as AdjustmentRequest,
+          previousProposal
+        );
+      }
+    }
+
+    rerouted = attachProofReport(rerouted);
 
     res.json({
       ok: true,

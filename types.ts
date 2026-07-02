@@ -201,6 +201,16 @@ export interface ProposalSnapshot {
   driverMessage?: string;
 }
 
+export type NegotiatedAlternativeId = 'fastest' | 'lowest_cost' | 'balanced';
+
+export interface NegotiatedAlternative {
+  id: NegotiatedAlternativeId;
+  label: string;
+  summary: string;
+  result: OptimizationResult;
+  delta: OverrideDelta;
+}
+
 export interface PilotReportSnapshot {
   runCount: number;
   rerouteCount: number;
@@ -376,6 +386,7 @@ export interface OptimizationResult {
   proofReport?: ShadowPilotProofReport;
   overrideDelta?: OverrideDelta;
   driverMessage?: string;
+  negotiatedAlternatives?: NegotiatedAlternative[];
   pilotReport?: PilotReportSnapshot;
   metrics: {
     baseline: Metrics;

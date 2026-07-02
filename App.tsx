@@ -304,6 +304,19 @@ const App: React.FC = () => {
     setStatus(ProcessingStatus.COMPLETE);
   };
 
+  const handleUseAlternative = (alternativeResult: OptimizationResult) => {
+    setPreviewResult({
+      ...alternativeResult,
+      pilotReport: result?.pilotReport ?? alternativeResult.pilotReport,
+      displayFilters,
+      routeFocus: {
+        ...routeFocus,
+        selectedRouteId: routeFocus.selectedRouteId ?? alternativeResult.optimizedRoutes?.[0]?.routeId,
+      },
+    });
+    setStatus(ProcessingStatus.COMPLETE);
+  };
+
   const handleReroute = async (overrides: { geofences?: Geofence[]; adjustmentRequest?: AdjustmentRequest }) => {
     if (!result) return;
     setPreviewResult(null);
@@ -341,6 +354,7 @@ const App: React.FC = () => {
           onPreviewAdjustment={handlePreviewAdjustment}
           onConfirmAdjustment={handleConfirmPreview}
           onCancelAdjustmentPreview={handleCancelPreview}
+          onUseAlternative={handleUseAlternative}
           onSelectRoute={selectedRouteId => setRouteFocus(prev => ({ ...prev, selectedRouteId, fitToActiveRoute: true }))}
           status={status}
           result={activeResult}
