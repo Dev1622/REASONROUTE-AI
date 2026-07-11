@@ -747,7 +747,7 @@ export async function routePathOnRoads(nodes: Node[], path: string[], geofences:
   const nodeMap = new Map(nodes.map(node => [node.id, node]));
   const routePoints = path
     .map(id => nodeMap.get(id))
-    .filter((node): node is Node & { lat: number; lng: number } => Boolean(node) && typeof node.lat === 'number' && typeof node.lng === 'number')
+    .filter((node): node is Node & { lat: number; lng: number } => node !== undefined && node !== null && typeof node.lat === 'number' && typeof node.lng === 'number')
     .map(node => ({ lat: node.lat, lng: node.lng }));
 
   if (routePoints.length < 2) return null;

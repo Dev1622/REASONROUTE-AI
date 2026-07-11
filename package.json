@@ -6,12 +6,13 @@
     "scripts": {
         "dev": "vite",
         "build": "vite build",
-        "preview": "vite preview",
-        "api": "tsx api/server.ts",
-        "benchmark:cvrplib": "npx tsx test/benchmark_cvrplib.ts",
-        "benchmark:fleet-scale": "npx tsx test/benchmark_fleet_scale.ts",
-        "test:urban": "npx tsx test/test_large_urban_sanity.ts"
-    },
+    "preview": "vite preview",
+    "api": "tsx api/server.ts",
+    "benchmark:cvrplib": "npx tsx test/benchmark_cvrplib.ts",
+    "benchmark:ortools": "npx tsx test/benchmark_vs_ortools.ts",
+    "benchmark:fleet-scale": "npx tsx test/benchmark_fleet_scale.ts",
+    "test:urban": "npx tsx test/test_large_urban_sanity.ts"
+  },
     "dependencies": {
         "@google/genai": "^1.38.0",
         "@types/leaflet": "^1.9.21",
