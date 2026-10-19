@@ -187,6 +187,69 @@ export interface PlanningInputs {
   fleet?: FleetConfig;
 }
 
+export interface OverlayStopCatalogEntry {
+  externalStopId: string;
+  label: string;
+  lat?: number;
+  lng?: number;
+  x?: number;
+  y?: number;
+  type?: 'hub' | 'stop' | 'warehouse' | 'depot' | 'virtual';
+  serviceTimeMin?: number;
+  note?: string;
+}
+
+export interface OverlayRouteStopRef {
+  externalStopId: string;
+  sequence?: number;
+}
+
+export interface OverlayRouteInput {
+  externalRouteId: string;
+  vehicleLabel?: string;
+  vehicleId?: string;
+  stops: OverlayRouteStopRef[];
+  metrics?: Partial<Metrics>;
+  notes?: string;
+}
+
+export interface OverlayPlanInput {
+  hostSystem: string;
+  sourceTool?: string;
+  externalPlanId?: string;
+  generatedAt?: string;
+  depotId?: string;
+  depot?: OverlayStopCatalogEntry;
+  stopCatalog: OverlayStopCatalogEntry[];
+  routes: OverlayRouteInput[];
+}
+
+export interface OverlayAnalysisRequest {
+  plan: OverlayPlanInput;
+  preferences?: PlanningInputs['preferences'];
+  optimization?: PlanningInputs['optimization'];
+  fleet?: FleetConfig;
+  geofences?: Geofence[];
+  historicalBaseline?: CompanyHistoricalMetricsBaseline;
+  historicalRoutes?: CompanyHistoricalRouteOutcome[];
+}
+
+export interface OverlayRecommendation {
+  status: 'accept_host' | 'negotiate' | 'replace';
+  headline: string;
+  detail: string;
+}
+
+export interface OverlayAnalysisResult {
+  integrationMode: 'overlay';
+  plan: OverlayPlanInput;
+  normalizedStopsText: string;
+  normalizationWarnings: string[];
+  hostMetrics: Metrics;
+  recommendation: OverlayRecommendation;
+  result: OptimizationResult;
+}
+
 export interface ProposalSnapshot {
   decisionStatus: DecisionStatus;
   comparison?: FleetComparison;
@@ -380,6 +443,13 @@ export interface OptimizationResult {
   shiftLabel?: string;
   historicalBaseline?: CompanyHistoricalMetricsBaseline;
   historicalRoutes?: CompanyHistoricalRouteOutcome[];
+  integrationMode?: 'standalone' | 'overlay';
+  integrationSource?: {
+    hostSystem: string;
+    sourceTool?: string;
+    externalPlanId?: string;
+  };
+  overlayNormalizationWarnings?: string[];
   internalBaselineComparison?: ShadowPilotComparisonSummary;
   organizationComparison?: ShadowPilotComparisonSummary;
   overrideAnalysis?: ShadowPilotOverrideAnalysis;

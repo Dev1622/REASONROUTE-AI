@@ -6,6 +6,8 @@ import {
   FleetConfig,
   Geofence,
   OptimizationResult,
+  OverlayAnalysisRequest,
+  OverlayAnalysisResult,
   ShadowPilotAggregateSnapshot,
   ShadowPilotProofReport,
   ShadowPilotRunRecord,
@@ -55,6 +57,11 @@ async function postJson<T>(path: string, payload: unknown): Promise<T> {
 
 export async function optimizeViaApi(payload: OptimizePayload): Promise<OptimizationResult> {
   const response = await postJson<{ result: OptimizationResult }>('/api/optimize', payload);
+  return response.result;
+}
+
+export async function analyzeOverlayViaApi(payload: OverlayAnalysisRequest): Promise<OverlayAnalysisResult> {
+  const response = await postJson<{ result: OverlayAnalysisResult }>('/api/overlay/analyze', payload);
   return response.result;
 }
 

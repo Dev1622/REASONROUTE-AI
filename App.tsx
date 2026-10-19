@@ -7,6 +7,7 @@ import {
   fetchShadowPilotAggregate,
   getShadowPilotScenario,
   importShadowPilotScenario,
+  analyzeOverlayViaApi,
   listShadowPilotScenarios,
   optimizeViaApi,
   replayShadowPilotScenario,
@@ -21,6 +22,7 @@ import {
   FleetConfig,
   Geofence,
   OptimizationResult,
+  OverlayAnalysisRequest,
   PilotReportSnapshot,
   ProcessingStatus,
   RouteFocus,
@@ -241,6 +243,32 @@ const App: React.FC = () => {
     }
   };
 
+  const handleOverlayAnalysis = async (payload: OverlayAnalysisRequest) => {
+    setStatus(ProcessingStatus.ANALYZING);
+    setErrorMessage(null);
+    setResult(null);
+    setPreviewResult(null);
+
+    try {
+      const analysis = await analyzeOverlayViaApi(payload);
+      setResult({
+        ...analysis.result,
+        integrationMode: 'overlay',
+        integrationSource: {
+          hostSystem: analysis.plan.hostSystem,
+          sourceTool: analysis.plan.sourceTool,
+          externalPlanId: analysis.plan.externalPlanId,
+        },
+        overlayNormalizationWarnings: analysis.normalizationWarnings,
+      });
+      setStatus(ProcessingStatus.COMPLETE);
+    } catch (error: any) {
+      console.error(error);
+      setErrorMessage(error?.message ?? 'Overlay analysis failed.');
+      setStatus(ProcessingStatus.ERROR);
+    }
+  };
+
   const refreshShadowPilotCollections = async () => {
     const [nextScenarios, nextAggregate] = await Promise.all([
       listShadowPilotScenarios().catch(() => []),
@@ -348,6 +376,7 @@ const App: React.FC = () => {
       <div className="w-[380px] lg:w-[32%] min-w-[320px] flex-shrink-0 z-10 shadow-2xl">
         <Sidebar
           onOptimize={handleOptimization}
+          onAnalyzeOverlay={handleOverlayAnalysis}
           onSaveScenario={handleSaveScenario}
           onReplayScenario={handleReplayScenario}
           onApprove={handleApprove}

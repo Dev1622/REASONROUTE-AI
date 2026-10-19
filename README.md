@@ -1,6 +1,6 @@
 # ReasonRoute AI
 
-ReasonRoute AI is a dispatcher-facing route planning app for shadow pilots with local fleets. It supports:
+ReasonRoute AI is a dispatcher-facing route intelligence layer for shadow pilots and overlay deployments. It supports:
 
 - geographic stop input with OpenStreetMap map rendering
 - road-snapped routing
@@ -10,6 +10,7 @@ ReasonRoute AI is a dispatcher-facing route planning app for shadow pilots with 
 - startup pilot-health panel for config readiness
 - CSV and Excel stop import
 - driver handoff exports in JSON and HTML
+- overlay analysis against an existing routing plan export
 
 ## Pilot Readiness
 
@@ -70,6 +71,34 @@ npm run dev
 4. Use `Mark blocked road` on the map if a corridor should be avoided.
 5. If the dispatcher wants a different visit order, reorder the stop list and apply the manual override.
 6. Export `Driver_Manifest.html` for the driver and `Route.geojson` for audit or GIS review.
+
+## Overlay Mode
+
+The production target is an intelligence layer that sits on top of an existing routing system.
+
+In overlay mode, ReasonRoute ingests a host plan export, normalizes the stop catalog, compares the host plan against a newly generated proposal, and returns:
+
+- a host-vs-proposed cost comparison
+- override delta by time, distance, emissions, and fuel-cost proxy
+- a recommendation to accept, negotiate, or replace the current plan
+- a driver-facing explanation for downstream handoff
+
+The overlay API expects a plan shaped like:
+
+```json
+{
+  "hostSystem": "Example TMS",
+  "depotId": "depot-001",
+  "stopCatalog": [
+    { "externalStopId": "stop-001", "label": "Stop A", "lat": 41.88, "lng": -87.63 }
+  ],
+  "routes": [
+    { "externalRouteId": "route-a", "vehicleLabel": "Truck A", "stops": [{ "externalStopId": "stop-001" }] }
+  ]
+}
+```
+
+The UI includes an overlay intake panel for manual testing, and the API exposes `/api/overlay/analyze` for direct integration work.
 
 ## Recommended Pilot Checks
 

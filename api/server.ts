@@ -18,6 +18,12 @@ import {
   NegotiatedAlternativeId,
   Node,
   OptimizationResult,
+  OverlayAnalysisRequest,
+  OverlayAnalysisResult,
+  OverlayPlanInput,
+  OverlayRecommendation,
+  OverlayRouteInput,
+  OverlayStopCatalogEntry,
   PlanningInputs,
   OverrideDelta,
   ShadowPilotComparisonSummary,
@@ -629,6 +635,123 @@ function validateHistoricalBaseline(baseline?: CompanyHistoricalMetricsBaseline,
   return { errors, warnings };
 }
 
+type OverlayNormalization = {
+  warnings: string[];
+  stopsText: string;
+  baselinePaths: string[][];
+  fleetConfig: FleetConfig;
+  depotId: string;
+  coordinateMode: 'geo' | 'demo';
+};
+
+function normalizeOverlayPlanInput(plan: OverlayPlanInput): OverlayNormalization {
+  const warnings: string[] = [];
+  if (!plan.hostSystem?.trim()) {
+    throw new Error('hostSystem is required for overlay analysis.');
+  }
+  if (!Array.isArray(plan.routes) || plan.routes.length === 0) {
+    throw new Error('At least one host route is required for overlay analysis.');
+  }
+  if (!Array.isArray(plan.stopCatalog) || plan.stopCatalog.length === 0) {
+    throw new Error('A stopCatalog is required for overlay analysis.');
+  }
+
+  const routeLabels = plan.routes.map((route, index) => route.vehicleLabel?.trim() || route.externalRouteId?.trim() || `Route ${index + 1}`);
+  const fleetConfig: FleetConfig = {
+    vehicleCount: Math.max(1, routeLabels.length),
+    vehicleLabels: routeLabels,
+  };
+
+  const stopMap = new Map<string, OverlayStopCatalogEntry>();
+  for (const stop of plan.stopCatalog) {
+    if (!stop.externalStopId?.trim()) {
+      throw new Error('Every stopCatalog entry needs an externalStopId.');
+    }
+    stopMap.set(stop.externalStopId.trim(), stop);
+  }
+
+  const depotId = plan.depotId?.trim() || plan.depot?.externalStopId?.trim() || plan.stopCatalog[0]?.externalStopId?.trim() || '';
+  if (!depotId) {
+    throw new Error('A depotId or depot entry is required for overlay analysis.');
+  }
+
+  const depotEntry = plan.depot?.externalStopId?.trim() ? plan.depot : stopMap.get(depotId) ?? plan.depot;
+  if (!depotEntry) {
+    throw new Error(`Depot ${depotId} is missing from the overlay stop catalog.`);
+  }
+  if (!depotEntry.label?.trim()) {
+    depotEntry.label = 'Depot';
+  }
+  stopMap.set(depotId, depotEntry);
+
+  const allStops = Array.from(stopMap.values());
+  const hasGeo = allStops.every(stop => typeof stop.lat === 'number' && typeof stop.lng === 'number');
+  const hasDemo = allStops.every(stop => typeof stop.x === 'number' && typeof stop.y === 'number');
+  if (!hasGeo && !hasDemo) {
+    throw new Error('Overlay stopCatalog must use either lat/lng for every stop or x/y for every stop.');
+  }
+  const coordinateMode: 'geo' | 'demo' = hasGeo ? 'geo' : 'demo';
+
+  const formatStop = (stop: OverlayStopCatalogEntry): string => {
+    const label = stop.label?.trim() || stop.externalStopId;
+    if (coordinateMode === 'geo') {
+      return `${label}, ${stop.lat}, ${stop.lng}`;
+    }
+    return `${label}, ${stop.x}, ${stop.y}`;
+  };
+
+  const normalizedStops: string[] = [formatStop(depotEntry)];
+  const seenStops = new Set<string>([depotId]);
+  for (const route of plan.routes) {
+    for (const stopRef of route.stops ?? []) {
+      const stopId = stopRef.externalStopId?.trim();
+      if (!stopId) {
+        warnings.push(`A stop on route ${route.externalRouteId} is missing an externalStopId.`);
+        continue;
+      }
+      const stop = stopMap.get(stopId);
+      if (!stop) {
+        throw new Error(`Unknown stop ${stopId} referenced by route ${route.externalRouteId}.`);
+      }
+      if (seenStops.has(stopId)) continue;
+      seenStops.add(stopId);
+      normalizedStops.push(formatStop(stop));
+    }
+  }
+
+  for (const stop of allStops) {
+    if (seenStops.has(stop.externalStopId)) continue;
+    seenStops.add(stop.externalStopId);
+    normalizedStops.push(formatStop(stop));
+  }
+
+  const baselinePaths = plan.routes.map(route => {
+    const path = [depotId];
+    for (const stopRef of route.stops ?? []) {
+      const stopId = stopRef.externalStopId?.trim();
+      if (!stopId || stopId === depotId) continue;
+      if (!stopMap.has(stopId)) {
+        throw new Error(`Unknown stop ${stopId} referenced by route ${route.externalRouteId}.`);
+      }
+      path.push(stopId);
+    }
+    path.push(depotId);
+    if (path.length < 3) {
+      throw new Error(`Route ${route.externalRouteId} must contain at least one stop.`);
+    }
+    return path;
+  });
+
+  return {
+    warnings,
+    stopsText: normalizedStops.join('\n'),
+    baselinePaths,
+    fleetConfig,
+    depotId,
+    coordinateMode,
+  };
+}
+
 function computeRoadEmissions(distanceKm: number, durationMin: number): number {
   const freeflowMinutes = distanceKm > 0 ? (distanceKm / 35) * 60 : 0;
   const congestionPenaltyKg = Math.max(0, durationMin - freeflowMinutes) * 0.015;
@@ -769,6 +892,33 @@ function softenComparisonForFallback(comparison: FleetComparison, diagnostics: R
   return {
     ...comparison,
     detail: `${comparison.detail} ETA confidence is softened because ${diagnostics.fallbackLegCount} leg${diagnostics.fallbackLegCount === 1 ? '' : 's'} used fallback road routing.`,
+  };
+}
+
+function buildOverlayRecommendation(comparison: FleetComparison, overrideDelta?: OverrideDelta): OverlayRecommendation {
+  if (comparison.status === 'improved') {
+    return {
+      status: 'replace',
+      headline: 'ReasonRoute found a better proposal',
+      detail: 'The overlay layer found a route that improves the host plan on the current metrics, so the recommendation is to replace the existing proposal.',
+    };
+  }
+
+  if (comparison.status === 'validated') {
+    return {
+      status: 'accept_host',
+      headline: 'Host route is already strong',
+      detail: 'ReasonRoute did not find a materially better alternative, so the overlay recommendation is to keep the host plan.',
+    };
+  }
+
+  return {
+    status: 'negotiate',
+    headline: overrideDelta?.direction === 'worse' ? 'Host plan should be negotiated before override' : 'A negotiated compromise likely exists',
+    detail:
+      overrideDelta?.direction === 'worse'
+        ? 'The candidate proposal adds cost relative to the host plan, so the dispatcher should negotiate only if an operational constraint justifies the change.'
+        : 'The host plan and the new proposal trade off different metrics, so the overlay should surface a middle-ground option before anyone commits.',
   };
 }
 
@@ -1022,6 +1172,133 @@ async function executeScenarioReplay(
     organizationComparison: proofReport.organizationComparison,
     overrideAnalysis: proofReport.overrideAnalysis,
     proofReport,
+  };
+}
+
+async function analyzeOverlayPlan(
+  request: OverlayAnalysisRequest
+): Promise<OverlayAnalysisResult> {
+  const normalized = normalizeOverlayPlanInput(request.plan);
+  const baseResult = await optimizeRoute(
+    normalized.stopsText,
+    [],
+    request.preferences,
+    request.optimization,
+    normalized.fleetConfig
+  );
+
+  const hostPlanNodes = baseResult.nodes as unknown as Node[];
+  const hostBaselineRoutes = await buildFleetRoutePlans(hostPlanNodes, normalized.baselinePaths, request.geofences ?? [], normalized.fleetConfig);
+  const hostMetrics = aggregateRouteMetrics(hostBaselineRoutes);
+  const hostComparisonSeed: OptimizationResult = {
+    ...(baseResult as unknown as OptimizationResult),
+    fleetConfig: normalized.fleetConfig,
+    baselineRoutes: hostBaselineRoutes,
+    optimizedRoutes: hostBaselineRoutes,
+    baselineRoad: hostBaselineRoutes[0]?.road ?? null,
+    optimizedRoad: hostBaselineRoutes[0]?.road ?? null,
+    metrics: {
+      baseline: hostMetrics,
+      optimized: hostMetrics,
+      improvement: buildImprovement(hostMetrics, hostMetrics),
+    },
+    comparison: buildComparison(hostMetrics, hostMetrics),
+    planningInputs: {
+      stopsText: normalized.stopsText,
+      preferences: request.preferences,
+      optimization: request.optimization,
+      fleet: normalized.fleetConfig,
+    },
+    integrationMode: 'overlay',
+    integrationSource: {
+      hostSystem: request.plan.hostSystem.trim(),
+      sourceTool: request.plan.sourceTool,
+      externalPlanId: request.plan.externalPlanId,
+    },
+    overlayNormalizationWarnings: normalized.warnings,
+    routeWarnings: normalized.warnings,
+  };
+  const hostProposalSnapshot = snapshotProposal(hostComparisonSeed);
+
+  const reasonRouteResult = await applyRoadRouting(
+    {
+      ...(baseResult as unknown as OptimizationResult),
+      fleetConfig: normalized.fleetConfig,
+      planningInputs: {
+        stopsText: normalized.stopsText,
+        preferences: request.preferences,
+        optimization: request.optimization,
+        fleet: normalized.fleetConfig,
+      },
+      scenarioId: request.plan.externalPlanId,
+      organizationName: request.plan.hostSystem,
+      scenarioLabel: request.plan.sourceTool ?? 'Overlay plan',
+      historicalBaseline: request.historicalBaseline,
+      historicalRoutes: request.historicalRoutes,
+      integrationMode: 'overlay',
+      integrationSource: {
+        hostSystem: request.plan.hostSystem.trim(),
+        sourceTool: request.plan.sourceTool,
+        externalPlanId: request.plan.externalPlanId,
+      },
+      overlayNormalizationWarnings: normalized.warnings,
+      routeWarnings: [...(baseResult.routeWarnings ?? []), ...normalized.warnings],
+    },
+    request.geofences ?? [],
+    undefined,
+    hostProposalSnapshot
+  );
+
+  const combinedBaselineMetrics = hostMetrics;
+  const combinedOptimizedMetrics = reasonRouteResult.metrics.optimized;
+  const combinedComparison = buildComparison(combinedBaselineMetrics, combinedOptimizedMetrics);
+  const combinedOverrideDelta = buildOverrideDelta(hostProposalSnapshot, combinedOptimizedMetrics);
+  const combinedResult: OptimizationResult = {
+    ...reasonRouteResult,
+    baselinePath: hostBaselineRoutes[0]?.path ?? reasonRouteResult.baselinePath,
+    optimizedPath: reasonRouteResult.optimizedPath,
+    baselineRoutes: hostBaselineRoutes,
+    baselineRoad: hostBaselineRoutes[0]?.road ?? null,
+    optimizedRoad: reasonRouteResult.optimizedRoutes[0]?.road ?? null,
+    metrics: {
+      baseline: combinedBaselineMetrics,
+      optimized: combinedOptimizedMetrics,
+      improvement: buildImprovement(combinedBaselineMetrics, combinedOptimizedMetrics),
+    },
+    comparison: softenComparisonForFallback(combinedComparison, reasonRouteResult.diagnostics ?? buildDiagnostics(reasonRouteResult)),
+    previousProposal: hostProposalSnapshot,
+    integrationMode: 'overlay',
+    integrationSource: {
+      hostSystem: request.plan.hostSystem.trim(),
+      sourceTool: request.plan.sourceTool,
+      externalPlanId: request.plan.externalPlanId,
+    },
+    overlayNormalizationWarnings: normalized.warnings,
+    routeWarnings: [...new Set([...(reasonRouteResult.routeWarnings ?? []), ...normalized.warnings])],
+    planningInputs: {
+      stopsText: normalized.stopsText,
+      preferences: request.preferences,
+      optimization: request.optimization,
+      fleet: normalized.fleetConfig,
+    },
+  };
+
+  const recommendation = buildOverlayRecommendation(combinedComparison, combinedOverrideDelta);
+  const overlayResult = withDecisionSummary(combinedResult, {
+    decisionStatus: 'updated_proposal',
+    previousProposal: hostProposalSnapshot,
+    overrideDelta: combinedOverrideDelta,
+    driverMessage: buildDriverMessage({ ...combinedResult, overrideDelta: combinedOverrideDelta }, undefined),
+  });
+
+  return {
+    integrationMode: 'overlay',
+    plan: request.plan,
+    normalizedStopsText: normalized.stopsText,
+    normalizationWarnings: normalized.warnings,
+    hostMetrics,
+    recommendation,
+    result: overlayResult,
   };
 }
 
@@ -1290,6 +1567,18 @@ app.post(['/optimize', '/api/optimize'], async (req, res) => {
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message ?? 'Unknown error' });
+  }
+});
+
+app.post(['/overlay/analyze', '/api/overlay/analyze'], async (req, res) => {
+  try {
+    const analysis = await analyzeOverlayPlan((req.body ?? {}) as OverlayAnalysisRequest);
+    res.json({
+      ok: true,
+      result: analysis,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message ?? 'Overlay analysis failed.' });
   }
 });
 
